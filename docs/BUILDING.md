@@ -31,7 +31,7 @@ an internet connection. Later builds work offline.
 | Generator | Ninja or Visual Studio solution | Ninja | Ninja |
 | Vulkan at build time | Headers are downloaded; SDK optional | Headers are downloaded | Headers are downloaded |
 | Vulkan at run time | GPU driver | GPU driver (Mesa or NVIDIA) | Built in (Mesa RADV) |
-| Shader compiler | Vulkan SDK `glslc`, or built automatically | `glslang-tools`, or built automatically | Built automatically if missing |
+| Shader compiler | Vulkan SDK `glslc`, or built automatically (needs Python 3) | `glslang-tools`, or built automatically | Built automatically if missing |
 
 **Presets** (defined in `CMakePresets.json`):
 
@@ -75,8 +75,11 @@ The game finds these files relative to the executable, so it can be launched fro
    Provides the validation layers, `glslc` and tools like *Vulkan Configurator*. The
    installer sets the `VULKAN_SDK` environment variable. **Restart Visual Studio** afterwards
    so it sees the variable. Without the SDK the project still builds (glslang is compiled from
-   source on the first build), but you get no validation messages.
-4. An up-to-date **GPU driver** from NVIDIA, AMD or Intel.
+   source on the first build, see the next item), but you get no validation messages.
+4. **Python 3**, only if you skip the Vulkan SDK: <https://www.python.org/downloads/windows/>
+   (tick *Add python.exe to PATH* in the installer). Building glslang from source runs a
+   Python script. With the SDK installed, Python isn't needed.
+5. An up-to-date **GPU driver** from NVIDIA, AMD or Intel.
 
 ### 2.2 Option A: Visual Studio, "Open Folder" (recommended)
 
@@ -475,7 +478,8 @@ A short checklist (full details in the Steamworks documentation:
 | CMake: *Could not find git* / download fails | Install Git and make sure it is on the PATH; check the internet connection for the first configure. |
 | Windows: *'cl' / 'ninja' is not recognized*, or *No CMAKE_CXX_COMPILER could be found* | Use the **Developer PowerShell for VS** or open the folder in Visual Studio, not a plain terminal. |
 | Linux: SDL3 configure error mentioning X11, Xcursor, Wayland… | Install the dev packages from §3.1. The error names the missing one. As a last resort you can disable a feature, e.g. `-DSDL_X11_XCURSOR=OFF`. |
-| *No glslc/glslangValidator found - building glslang from source* | Not an error: no shader compiler was found, so one is built. Install the Vulkan SDK / `glslang-tools` to skip this. |
+| *No glslc/glslangValidator found - building glslang from source* | Not an error: no shader compiler was found, so one is built. Install the Vulkan SDK / `glslang-tools` to skip this. If the SDK *is* installed, restart Visual Studio (or your terminal) so it sees `VULKAN_SDK`, then delete the build folder and configure again. |
+| CMake: *Could NOT find Python3* (while configuring glslang) | glslang is being built from source and needs Python 3. Install Python (on Windows tick *Add python.exe to PATH*), or install the Vulkan SDK so the source build isn't needed. |
 | Game shows *No Vulkan driver found* | Install or update the GPU driver. On Linux, install `mesa-vulkan-drivers` (or your distro's equivalent) and check `vulkaninfo --summary`. |
 | Game shows *No GPU with Vulkan 1.3 support* | The driver is too old or the GPU too old. Update the driver. Very old GPUs aren't supported by design. |
 | Log says *Validation requested but VK_LAYER_KHRONOS_validation is not installed* | Harmless. Install the Vulkan SDK (Windows) or `vulkan-validationlayers` (Linux) to get validation. |

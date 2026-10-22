@@ -24,7 +24,7 @@ Step-by-step build instructions for Windows, Linux and Steam Deck are in [docs/B
 - **Visual Studio 2022 or 2026** with the *Desktop development with C++* workload (includes CMake + Ninja)
 - **Vulkan SDK** (recommended): <https://vulkan.lunarg.com/sdk/home>. Gives you the
   validation layers and `glslc`. Without it the project still builds (glslang is built
-  from source) but you lose validation messages.
+  from source, which needs **Python 3** on the PATH) but you lose validation messages.
 - An up-to-date GPU driver.
 
 ### Linux (desktop)
