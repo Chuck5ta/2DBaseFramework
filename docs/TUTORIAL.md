@@ -5,8 +5,8 @@ new class, `MyGame`, so the original `DemoGame` stays available for comparison. 
 every step you can build and run the game and see the result.
 
 **What you'll learn:** the `Game` hooks, drawing sprites, loading textures, keyboard and
-gamepad input, the fixed timestep with interpolation, cameras, culling, simple particles
-and a HUD.
+gamepad input, the fixed timestep with interpolation, cameras, culling, simple particles,
+a HUD and text.
 
 **Before you start:** the project builds and runs (see [BUILDING.md](BUILDING.md)). For
 background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -20,6 +20,7 @@ background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
 | [5](#step-5--a-camera-that-follows) | Camera follow + zoom | The view tracks the slime |
 | [6](#step-6--coins-and-particles) | Coins to collect, particle bursts | Gameplay! |
 | [7](#step-7--a-hud) | A second camera for screen-space UI | Score and gamepad indicator |
+| [8](#step-8--text) | A font, HUD text and world-space text | Score, FPS, help panel, "+1" popups |
 
 > Every code listing in this tutorial was compiled (with warnings as errors) and run with
 > Vulkan validation enabled, step by step. If something doesn't work, compare with
@@ -585,6 +586,7 @@ private:
 
     void spawnBurst(glm::vec2 at, int count, render2d::Color color);
     glm::vec2 randomWorldPoint();
+
     std::unique_ptr<render2d::SpriteBatch> batch_;
     render2d::Camera2D camera_;
     gfx::Texture playerTexture_;
@@ -690,7 +692,7 @@ void MyGame::onInit(core::Application& app)
 `onFixedUpdate` now needs the `app` parameter (for rumble). Add the `app` parameter:
 
 ```cpp
-	void MyGame::onFixedUpdate(core::Application& app, float dt)
+void MyGame::onFixedUpdate(core::Application& app, float dt)
 ```
 
 then add the coin and particle logic at the end of the function:
@@ -816,6 +818,155 @@ Things to notice:
 **Run it:** collected coins appear as a row of icons at the top left; a square at the top
 right turns green when a gamepad is connected. **V** toggles vsync.
 
+---
+
+## Step 8 — Text
+
+Time to replace the icons with real text. A **`render2d::Font`** loads a TrueType/OpenType
+file and bakes its characters into a texture (an *atlas*) with stb_truetype.
+**`SpriteBatch::drawText`** then draws each character as a small textured quad, so text
+batches with everything else and needs no special shader.
+
+The project ships **Roboto Medium** in `assets/fonts/` (Apache 2.0 licence; see the README
+there). Any `.ttf`/`.otf` works.
+
+| `TextStyle` field | Meaning |
+|---|---|
+| `size` | Text size in world units (with the HUD camera: pixels) |
+| `color` | sRGB colour; alpha fades text |
+| `align` | `Left`, `Center` or `Right`, relative to the position you pass |
+| `lineSpacing` | Multiplier for the gap between lines (`'\n'` starts a new line) |
+| `snapToPixel` | Rounds positions to whole units. Use it with a 1:1 HUD camera for crisp text |
+
+`drawText`'s position is the **top** of the first line. `font.measure(text, size)` returns
+the size of a block of text before you draw it (handy for backgrounds and layout).
+
+In **`MyGame.h`**, add the font after the HUD camera,
+
+```cpp
+    render2d::Font font_;
+```
+
+a `Popup` struct next to `Coin`,
+
+```cpp
+    struct Popup {
+        glm::vec2 position;
+        float life; // 1 = just spawned, 0 = gone
+    };
+```
+
+and the new state at the end of the members:
+
+```cpp
+    std::vector<Popup> popups_;
+    bool showHelp_ = true;
+```
+
+In **`MyGame.cpp`**, add `#include <cstdio>` and `#include <string>` to the includes. Load the
+font in `onInit`, after the orb texture:
+
+```cpp
+    font_ = Font::load(gpu, core::assetPath("fonts/Roboto-Medium.ttf")); // baked at 48 px
+```
+
+In `onFixedUpdate`, spawn a popup when a coin is collected. Add this line right after
+`spawnBurst(c.position, 30, colors::Yellow);`, *before* the coin moves:
+
+```cpp
+            popups_.push_back({c.position, 1.0f}); // "+1" floats up from the coin
+```
+
+and update the popups at the end of the function:
+
+```cpp
+    // --- "+1" popups: rise and fade over about a second ---
+    for (Popup& p : popups_) {
+        p.position.y -= 30.0f * dt;
+        p.life -= dt;
+    }
+    popups_.erase(std::remove_if(popups_.begin(), popups_.end(), [](const Popup& p) { return p.life <= 0.0f; }),
+                  popups_.end());
+```
+
+In `onUpdate`, toggle the help panel with **H**, after the vsync toggle:
+
+```cpp
+    if (in.keyPressed(SDL_SCANCODE_H))
+        showHelp_ = !showHelp_;
+```
+
+In `onRender`, draw the popups in the **world** layer, after the player (so they're on
+top) and before the world's `batch_->end();`:
+
+```cpp
+    // --- "+1" popups: world-space text, drawn last so it's on top ---
+    for (const Popup& p : popups_) {
+        TextStyle style;
+        style.size = 14.0f; // world units
+        style.align = TextAlign::Center;
+        style.color = Color(1.0f, 0.95f, 0.5f, std::min(p.life * 2.0f, 1.0f));
+        batch_->drawText(font_, "+1", p.position - glm::vec2(0.0f, 34.0f), style);
+    }
+```
+
+Finally, in the HUD part of `onRender`, replace the coin row and the gamepad square (keep
+the `const float ui = ...` line) with:
+
+```cpp
+    TextStyle hud;
+    hud.size = 26.0f * ui;
+    hud.snapToPixel = true; // the HUD camera maps 1 unit to 1 pixel: keep glyphs on whole pixels
+
+    // Score: a coin icon and the count next to it.
+    batch_->draw(orbTexture_, glm::vec2(30.0f, 30.0f) * ui, 0.35f * ui, 0.0f, colors::Yellow);
+    batch_->drawText(font_, std::to_string(score_), glm::vec2(50.0f, 14.0f) * ui, hud);
+
+    // Top right: frame rate and the active input device.
+    TextStyle info = hud;
+    info.size = 16.0f * ui;
+    info.align = TextAlign::Right;
+    info.color = Color(1.0f, 1.0f, 1.0f, 0.75f);
+    char fps[32];
+    std::snprintf(fps, sizeof(fps), "%.0f fps", double(app.fps()));
+    batch_->drawText(font_, fps, {viewport.x - 16.0f * ui, 12.0f * ui}, info);
+    const bool pad = app.input().hasGamepad();
+    info.color = pad ? colors::Green : Color(1.0f, 1.0f, 1.0f, 0.5f);
+    batch_->drawText(font_, pad ? "Gamepad" : "Keyboard & mouse", {viewport.x - 16.0f * ui, 34.0f * ui}, info);
+
+    // Bottom: a help panel, sized to fit its text.
+    if (showHelp_) {
+        const char* help = "WASD / left stick: move      Space / (A): burst\n"
+                           "Wheel / bumpers: zoom      V: vsync      H: hide help";
+        TextStyle style = hud;
+        style.size = 16.0f * ui;
+        style.align = TextAlign::Center;
+        const glm::vec2 size = font_.measure(help, style.size);
+        const glm::vec2 top(viewport.x * 0.5f, viewport.y - size.y - 24.0f * ui);
+        const glm::vec2 margin(14.0f * ui, 8.0f * ui);
+        batch_->drawRect({top.x - size.x * 0.5f - margin.x, top.y - margin.y}, size + margin * 2.0f,
+                         Color(0.0f, 0.0f, 0.0f, 0.5f));
+        batch_->drawText(font_, help, top, style);
+    }
+```
+
+Things to notice:
+
+- **Two kinds of text.** The "+1" popups are drawn with the *world* camera, so they move
+  and zoom with the game (14 world units tall). The HUD uses the *screen* camera, so its
+  size is in pixels.
+- **Baked size vs drawn size.** The font is rasterised once at 48 px and scaled when drawn.
+  Text is sharpest at or a little below the baked size. Bake larger (`FontDesc::pixelHeight`)
+  if you draw big titles, and smaller for pixel-perfect small text.
+- **Which characters.** By default printable ASCII and Latin-1 are baked (é, ü, ñ, £, ©…).
+  Strings are UTF-8, so `"Café"` just works. Characters that weren't baked show as `?`.
+- **Text panels** are just a `drawRect` behind the text, sized with `font.measure`.
+- **`snprintf` into a small buffer** formats numbers without allocating every frame.
+
+**Run it:** the score is a number next to a coin icon, the frame rate and input device are
+shown at the top right, and a help panel sits at the bottom (**H** hides it). Collect a
+coin and a "+1" floats up and fades away.
+
 **That's the complete demo.** Your `MyGame` now behaves exactly like `DemoGame`. You can
 delete `DemoGame.h/.cpp` from your own projects once you no longer need them for reference.
 
@@ -831,9 +982,8 @@ Ideas, roughly in order of difficulty, each building on what you've used here:
    chasing the player with `glm::normalize(player - enemy)`.
 3. **Tilemaps from a file.** Load a map made in the Tiled editor (`.tmj` is JSON) and draw
    the visible tiles from a tileset atlas, just like step 4.
-4. **Text.** Bake a font into an atlas with `stb_truetype` and draw each glyph as a sprite.
+4. **Game states.** A title screen, pause menu and game-over screen: a small state enum in
+   `MyGame`, switched on in `onUpdate`/`onRender`, with text from step 8.
 5. **Sound.** SDL3's audio streams, or a library such as miniaudio.
-6. **Game states.** A title screen, pause menu and game-over screen: a small state enum in
-   `MyGame`, switched on in `onUpdate`/`onRender`.
-7. **Physics.** Box2D v3 for proper collisions and rigid bodies, stepped in
+6. **Physics.** Box2D v3 for proper collisions and rigid bodies, stepped in
    `onFixedUpdate`.

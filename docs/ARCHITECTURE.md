@@ -33,7 +33,7 @@ The code is split into four layers. Each layer only depends on the layers below 
 ```mermaid
 flowchart TD
     game["game/  (DemoGame or your game)"]
-    r2d["render2d/  SpriteBatch · Camera2D"]
+    r2d["render2d/  SpriteBatch · Camera2D · Font"]
     core["core/  Application · Window · Input · Paths · Log"]
     gfx["gfx/  VulkanContext · Swapchain · Renderer · Buffer · Image · Texture · Pipeline · Descriptors"]
     third["Third party: SDL3 · volk · Vulkan-Headers · VMA · GLM · stb_image"]
@@ -50,7 +50,7 @@ flowchart TD
 |---|---|---|---|
 | `src/core` | `core` | Program lifetime, main loop, window, input, file paths, logging | Yes, identical |
 | `src/gfx` | `gfx` | Everything Vulkan: device, swapchain, frames, memory, textures, pipelines | Yes, identical |
-| `src/render2d` | `render2d` | 2D-specific rendering on top of `gfx` | No |
+| `src/render2d` | `render2d` | 2D rendering on top of `gfx`: sprites, cameras, text | Yes, identical (Game3D uses it for its HUD) |
 | `src/game` | (global) | The actual game; replaceable | No |
 
 > `core` and `gfx` reference each other in one place only: `Application` owns the
@@ -70,7 +70,7 @@ src/
     Log.h                     LOG_* macros, core::fatal()
   gfx/
     VkCommon.h                single Vulkan include (vulkan.h + volk + VMA), VK_CHECK
-    Implementations.cpp       VMA and stb_image implementation units
+    Implementations.cpp       VMA, stb_image and stb_truetype implementation units
     VulkanContext.h/.cpp      instance, debug messenger, GPU selection, device, VMA
     Swapchain.h/.cpp          swapchain + image views + per-image semaphores
     Renderer.h/.cpp           frames in flight, acquire/submit/present, main pass
@@ -81,11 +81,13 @@ src/
     Descriptors.h/.cpp        layout builder, growable allocator, writer
   render2d/
     Camera2D.h/.cpp           orthographic camera, screen <-> world
-    SpriteBatch.h/.cpp        batched textured quads
+    SpriteBatch.h/.cpp        batched textured quads, drawText
+    Font.h/.cpp               TrueType font baked into an atlas (stb_truetype)
   game/
     DemoGame.h/.cpp           example game
 shaders/                      GLSL sources (compiled to SPIR-V at build time)
 assets/                       runtime data (copied next to the executable)
+  fonts/                      Roboto Medium + its licence
 cmake/                        Dependencies.cmake, Shaders.cmake
 ```
 
@@ -205,6 +207,13 @@ whenever the current one is exhausted; optional per-set freeing) and `Descriptor
 API: `begin(frame, viewProj)`, `draw(texture, Sprite)`, `draw(texture, pos, scale, rot,
 color)`, `drawRect`, `drawRectOutline`, `drawLine`, `end()`. `UvRect` handles
 atlas/sprite-sheet sub-rectangles and flipping. `stats()` reports sprites and draw calls.
+
+**`render2d::Font`**: a TrueType/OpenType font baked into a texture atlas (details in
+§6.4). `Font::load(gpu, path, FontDesc)` rasterises a contiguous range of characters
+(default: printable ASCII + Latin-1) at `FontDesc::pixelHeight` (default 48 px).
+`measure(text, size)`, `lineHeight(size)` and `ascent(size)` support layout. Text is drawn
+with `SpriteBatch::drawText(font, utf8, position, TextStyle)`; `TextStyle` sets size,
+colour, alignment (`Left`/`Center`/`Right`), line spacing and pixel snapping.
 
 ---
 
@@ -370,6 +379,30 @@ flowchart TD
 to linear. `sprite.frag` outputs `texture(uv) * color`. Pipeline: alpha blending, no depth,
 no culling (so flipped/rotated sprites always render).
 
+### 6.4 Text
+
+```mermaid
+flowchart LR
+    ttf["assets/fonts/*.ttf"] -->|"Font::load: stb_truetype packs glyphs"| atlas["Atlas texture<br/>RGB white, A = coverage<br/>+ glyph table (UVs, offsets, advance)"]
+    atlas --> draw["SpriteBatch::drawText<br/>UTF-8 decode, kerning, alignment<br/>one quad per visible glyph"]
+    draw --> batch["Same sprite pipeline & batching<br/>(text = textured quads)"]
+```
+
+- **Baking (load time).** `stbtt_PackFontRange` rasterises every character in the range into
+  the smallest square atlas that fits (256 to 4096 px), with 2× horizontal oversampling for
+  smoother sub-pixel placement. Coverage goes into the alpha channel of a white RGBA texture,
+  so the ordinary sprite shader draws and tints text: no extra pipeline or shader.
+- **Mipmaps and filtering.** Smooth fonts (`FontDesc::smooth`, the default) use linear
+  filtering and mipmaps, so text drawn below the baked size stays clean. Pixel fonts use
+  nearest filtering and should be drawn at whole multiples of their size.
+- **Layout (draw time).** `drawText` decodes UTF-8, applies kerning between pairs, handles
+  `'\n'`, and aligns each line left, centre or right of the given position, which is the
+  **top** of the first line. Characters outside the baked range render as `?`.
+- **Crisp HUD text.** With a 1:1 screen-space camera, `TextStyle::snapToPixel` rounds the
+  start position and baselines to whole pixels.
+- **Cost.** Text is just more quads in the batch; consecutive text and sprites from the same
+  atlas share draw calls. The font keeps the `.ttf` data in memory for kerning lookups.
+
 ---
 
 ## 7. Coordinate systems and colour
@@ -412,7 +445,7 @@ in linear**. Data textures (normal maps, masks) should use `TextureDesc::srgb = 
 | volk | SDK 1.4.350.0 | runtime Vulkan loader | compiled into `third_party` |
 | VMA | 3.3.0 | GPU memory allocation | header (impl in `Implementations.cpp`) |
 | GLM | 1.0.1 | vector/matrix math | headers |
-| stb | pinned commit | image loading | header (impl in `Implementations.cpp`) |
+| stb | pinned commit | image loading (stb_image), font rasterisation (stb_truetype) | header (impl in `Implementations.cpp`) |
 
 Global definitions: `VK_NO_PROTOTYPES`, `GLM_FORCE_DEPTH_ZERO_TO_ONE`,
 `GLM_FORCE_RADIANS`.
@@ -459,7 +492,7 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 |---|---|
 | Write your game | New `core::Game` subclass in `src/game/`, construct it in `main.cpp` |
 | Add a shader | Drop `foo.vert` / `foo.frag` in `shaders/`, build a pipeline with `PipelineBuilder` using `core::shaderPath("foo.vert.spv")` |
-| Add a new renderer (tilemap, text, particles on GPU) | New class in `render2d/` following `SpriteBatch`: own `Pipeline`, per-frame buffers indexed by `frame.frameIndex` |
+| Add a new renderer (tilemap, particles on GPU) | New class in `render2d/` following `SpriteBatch`: own `Pipeline`, per-frame buffers indexed by `frame.frameIndex` |
 | Render off-screen (post-processing, lighting) | Create an `Image` with `COLOR_ATTACHMENT \| SAMPLED` usage, render to it in `onPreRender`, sample it in the main pass |
 | Change GPU features | Feature chain in `VulkanContext::createDevice()` |
 | Upload data at runtime | `Buffer` with `CpuToGpu` per frame in flight, or `immediateSubmit` at load time |
@@ -477,14 +510,15 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 | One descriptor set per texture | Binding a texture is one call; no caches that can go stale | One set per texture (cheap); not bindless |
 | CPU-side sprite transform | Trivial shaders, unlimited batching of mixed transforms | CPU cost per sprite (fine for tens of thousands) |
 | Wait-idle on swapchain recreation | Simplest correct approach | Brief stall on resize only |
+| Fonts baked with stb_truetype into a regular texture | One small header, any .ttf, text batches with sprites through the same pipeline | Sharpest near the baked size; bake large titles separately (or switch to MSDF later) |
 | Fixed-timestep simulation | Deterministic gameplay, frame-rate independent | Needs interpolation for smooth rendering |
-| Identical `core/` + `gfx/` in 2D and 3D | Each project stands alone and is easy to understand | Changes must be copied between projects (or factored into a shared library later) |
+| Identical `core/`, `gfx/` and `render2d/` in 2D and 3D | Each project stands alone and is easy to understand | Changes must be copied between projects (or factored into a shared library later) |
 
 ---
 
 ## 13. Known limitations and roadmap
 
-- No text rendering yet (candidates: stb_truetype atlas, MSDF fonts).
+- Text is baked at one size per `Font`; for very large or zooming text consider MSDF fonts.
 - No audio (SDL3 audio streams or miniaudio).
 - No deferred resource destruction; destroy GPU objects only when idle (see §4).
 - Single queue for graphics/transfer; uploads are blocking (`immediateSubmit`).

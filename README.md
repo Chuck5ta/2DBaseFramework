@@ -9,6 +9,7 @@ and a batched sprite renderer, plus a playable demo showing how they fit togethe
 | Platform | Window, keyboard/mouse, gamepads (incl. Steam Deck controls), hi-DPI | SDL3 |
 | GPU | Instance/device setup, swapchain, frames in flight, buffers, textures, pipelines | Vulkan 1.3 via volk + VMA |
 | 2D | Sprite batching, orthographic camera, atlas UVs, rect/line helpers | your code |
+| Text | TrueType fonts baked into an atlas, UTF-8, kerning, alignment, world or screen space | stb_truetype |
 | Math / images | Vectors & matrices, PNG/JPG loading | GLM, stb_image |
 
 All dependencies are downloaded automatically by CMake at a pinned version.
@@ -106,15 +107,16 @@ src/
   render2d/
     SpriteBatch         batched quads, 1 draw call per texture run
     Camera2D            ortho camera, zoom/rotation, screen<->world
+    Font                .ttf/.otf baked into a texture atlas; drawn with SpriteBatch::drawText
   game/
     DemoGame            the example — replace with your game
 shaders/                GLSL; every *.vert/*.frag/*.comp is compiled automatically
-assets/                 copied next to the exe
+assets/                 copied next to the exe (fonts/ has Roboto Medium, Apache 2.0)
 cmake/                  dependency + shader build logic
 ```
 
-`core/` and `gfx/` are identical in Game2D and Game3D, so improvements can be copied
-between them (or later moved into a shared library).
+`core/`, `gfx/` and `render2d/` are identical in Game2D and Game3D, so improvements can be
+copied between them (or later moved into a shared library).
 
 ---
 
@@ -187,6 +189,7 @@ Tips
 | Move | WASD / arrows | Left stick / D-pad |
 | Particle burst | Space | A |
 | Zoom | Mouse wheel, + / − | Bumpers |
+| Show/hide help | H | |
 | Toggle vsync | V | |
 | Fullscreen | F11 / Alt+Enter | |
 | Quit | Esc | View (Back) |
@@ -226,7 +229,6 @@ limits, suspend/resume (swapchain recreation), on-screen keyboard if you need te
 
 ## 7. Where to go next
 
-- **Text rendering:** stb_truetype or an MSDF atlas fed into `SpriteBatch`.
 - **Audio:** SDL3 audio streams, or miniaudio.
 - **Tilemaps:** load Tiled (`.tmj`) maps, draw visible tiles from an atlas.
 - **Physics:** Box2D v3.

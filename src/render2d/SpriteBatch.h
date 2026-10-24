@@ -4,11 +4,13 @@
 #include "gfx/Pipeline.h"
 #include "gfx/Renderer.h"
 #include "gfx/Texture.h"
+#include "render2d/Font.h"
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
 
+#include <string_view>
 #include <vector>
 
 namespace render2d {
@@ -39,6 +41,16 @@ struct UvRect {
     UvRect flippedY() const { return {{min.x, max.y}, {max.x, min.y}}; }
 };
 
+enum class TextAlign { Left, Center, Right };
+
+struct TextStyle {
+    float size = 24.0f;            // line height-ish size in world units (HUD camera: pixels)
+    Color color = colors::White;
+    TextAlign align = TextAlign::Left;
+    float lineSpacing = 1.0f;      // multiplier for the distance between lines
+    bool snapToPixel = false;      // round the start position; crisper text with a 1:1 HUD camera
+};
+
 struct Sprite {
     glm::vec2 position{0.0f};   // world position of the origin point
     glm::vec2 size{32.0f};      // world size
@@ -55,6 +67,7 @@ struct Sprite {
 //   batch.begin(frame, camera.viewProjection());
 //   batch.draw(texture, sprite);
 //   batch.drawRect({0, 0}, {100, 20}, colors::Red);
+//   batch.drawText(font, "Hello", {10, 10}, {.size = 32});
 //   batch.end();
 class SpriteBatch {
 public:
@@ -69,6 +82,10 @@ public:
     void drawRect(glm::vec2 position, glm::vec2 size, Color color);
     void drawRectOutline(glm::vec2 position, glm::vec2 size, float thickness, Color color);
     void drawLine(glm::vec2 a, glm::vec2 b, float thickness, Color color);
+    // UTF-8 text; '\n' starts a new line. `position` is the top of the first
+    // line at its left edge, centre or right edge, depending on style.align.
+    // Returns the size of the drawn block (same as font.measure()).
+    glm::vec2 drawText(const Font& font, std::string_view utf8, glm::vec2 position, const TextStyle& style = {});
     void end();
     // begin()/end() may be used several times per frame, e.g. once for the
     // world camera and once more for a screen-space HUD.

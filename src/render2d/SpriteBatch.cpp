@@ -174,6 +174,62 @@ void SpriteBatch::drawLine(glm::vec2 a, glm::vec2 b, float thickness, Color colo
     pushQuad(white_, corners, UvRect{}, color);
 }
 
+glm::vec2 SpriteBatch::drawText(const Font& font, std::string_view text, glm::vec2 position, const TextStyle& style)
+{
+    const float scale = style.size / font.bakedSize(); // baked pixels -> world units
+    const float lineStep = font.lineHeight(style.size) * style.lineSpacing;
+
+    glm::vec2 origin = position;
+    if (style.snapToPixel)
+        origin = glm::round(origin);
+
+    size_t lineStart = 0;
+    int line = 0;
+    for (;;) {
+        // Horizontal start of this line, depending on alignment.
+        float x = origin.x;
+        if (style.align != TextAlign::Left) {
+            const float width = font.lineWidth(text, lineStart, style.size);
+            x -= style.align == TextAlign::Center ? width * 0.5f : width;
+            if (style.snapToPixel)
+                x = std::round(x);
+        }
+        float baseline = origin.y + font.ascent(style.size) + float(line) * lineStep;
+        if (style.snapToPixel)
+            baseline = std::round(baseline);
+
+        size_t i = lineStart;
+        uint32_t prev = 0;
+        bool newline = false;
+        while (i < text.size()) {
+            const uint32_t cp = decodeUtf8(text, i);
+            if (cp == '\n') {
+                newline = true;
+                break;
+            }
+            if (prev)
+                x += font.kerning(prev, cp) * scale;
+            const Font::Glyph& g = font.glyph(cp);
+            if (g.visible) {
+                const glm::vec2 p0(x + g.offMin.x * scale, baseline + g.offMin.y * scale);
+                const glm::vec2 p1(x + g.offMax.x * scale, baseline + g.offMax.y * scale);
+                const glm::vec2 corners[4] = {p0, {p1.x, p0.y}, p1, {p0.x, p1.y}};
+                pushQuad(font.texture(), corners, UvRect{g.uvMin, g.uvMax}, style.color);
+            }
+            x += g.advance * scale;
+            prev = cp;
+        }
+        if (!newline)
+            break;
+        lineStart = i; // just past the '\n'
+        ++line;
+    }
+
+    glm::vec2 size = font.measure(text, style.size);
+    size.y += float(line) * (lineStep - font.lineHeight(style.size)); // account for lineSpacing
+    return size;
+}
+
 void SpriteBatch::flush()
 {
     const uint32_t count = spriteCount_ - batchStart_;

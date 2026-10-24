@@ -1,4 +1,5 @@
-// Single-header library implementations live in exactly one translation unit.
+// Single-header library implementations live in exactly one translation unit:
+// VMA (GPU memory), stb_image (image loading), stb_truetype (fonts).
 
 #include "gfx/VkCommon.h"
 
@@ -21,6 +22,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_FAILURE_USERMSG
 #include <stb_image.h>
+
+#define STB_TRUETYPE_IMPLEMENTATION
+#include <stb_truetype.h>
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #elif defined(__GNUC__)
