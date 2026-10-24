@@ -15,6 +15,7 @@ All dependencies are downloaded automatically by CMake at a pinned version.
 
 For a deeper look at how it all fits together, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Step-by-step build instructions for Windows, Linux and Steam Deck are in [docs/BUILDING.md](docs/BUILDING.md).
+To learn the framework by rebuilding the demo step by step, follow [docs/TUTORIAL.md](docs/TUTORIAL.md).
 
 ---
 

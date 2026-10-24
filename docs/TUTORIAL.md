@@ -34,6 +34,14 @@ A game is a class derived from `core::Game`. `core::Application` owns the window
 and GPU, runs the main loop and calls your class's hooks (`onInit`, `onUpdate`,
 `onRender`, …). Every hook is optional; this first version only uses `onUpdate` to quit.
 
+> **Adding files in Visual Studio.** You never need to edit CMake for new source files:
+> anything under `src/` is picked up automatically on the next build. Create the files from
+> **File Explorer**, or in Solution Explorer switch to **Folder View** (the *Switch between
+> solutions and available views* button) and use *Add → New File* on `src/game`.
+> **Avoid *Add → New Item* in the *CMake Targets View*:** Visual Studio then tries to add
+> the file to a CMake target itself, and can edit the wrong CMake script (for example
+> `cmake/Dependencies.cmake`), which breaks the configure step.
+
 Create **`src/game/MyGame.h`**:
 
 ```cpp
@@ -519,7 +527,7 @@ void MyGame::onUpdate(core::Application& app, float dt)
 
 Things to notice:
 
-- Zoom is multiplied by `exp(delta)` rather than adding to it, so zooming in and out feel
+- Zoom is multiplied by `exp(delta)` rather than adding to it, so zooming in and out feels
   equally fast at every zoom level.
 - The follow speed `6.0` is a feel parameter: higher = tighter, lower = floatier.
 - The camera lives in `onUpdate` (per frame), not in `onFixedUpdate`: camera movement
@@ -679,8 +687,13 @@ void MyGame::onInit(core::Application& app)
 }
 ```
 
-`onFixedUpdate` now needs the `app` parameter (for rumble). Name it, then add the coin and
-particle logic at the end of the function:
+`onFixedUpdate` now needs the `app` parameter (for rumble). Add the `app` parameter:
+
+```cpp
+	void MyGame::onFixedUpdate(core::Application& app, float dt)
+```
+
+then add the coin and particle logic at the end of the function:
 
 ```cpp
     // --- Coins: collect when close enough ---

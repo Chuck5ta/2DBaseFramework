@@ -476,6 +476,7 @@ A short checklist (full details in the Steamworks documentation:
 | Symptom | Cause / fix |
 |---|---|
 | CMake: *Could not find git* / download fails | Install Git and make sure it is on the PATH; check the internet connection for the first configure. |
+| CMake error in `cmake/Dependencies.cmake` or `cmake/Shaders.cmake` (e.g. at `add_library`) right after adding a file in Visual Studio | Visual Studio's *Add → New Item* in the *CMake Targets View* inserted the new file into a CMake script. Remove the added path (e.g. `"../src/game/MyGame.h"`) from those scripts and from `CMakeLists.txt`, then *Project → Delete Cache and Reconfigure*. New files under `src/` need no CMake changes; add them via File Explorer or Solution Explorer's *Folder View*. |
 | Windows: *'cl' / 'ninja' is not recognized*, or *No CMAKE_CXX_COMPILER could be found* | Use the **Developer PowerShell for VS** or open the folder in Visual Studio, not a plain terminal. |
 | Linux: SDL3 configure error mentioning X11, Xcursor, Wayland… | Install the dev packages from §3.1. The error names the missing one. As a last resort you can disable a feature, e.g. `-DSDL_X11_XCURSOR=OFF`. |
 | *No glslc/glslangValidator found - building glslang from source* | Not an error: no shader compiler was found, so one is built. Install the Vulkan SDK / `glslang-tools` to skip this. If the SDK *is* installed, restart Visual Studio (or your terminal) so it sees `VULKAN_SDK`, then delete the build folder and configure again. |
