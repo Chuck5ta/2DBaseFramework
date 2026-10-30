@@ -84,6 +84,12 @@ void DemoGame::onInit(core::Application& app)
     orbTexture_ = makeOrbTexture(gpu);
     font_ = Font::load(gpu, core::assetPath("fonts/Roboto-Medium.ttf")); // baked at 48 px
 
+    // Sounds: decode them now so the first play has no delay.
+    coinSound_ = core::assetPath("sounds/coin.wav");
+    whooshSound_ = core::assetPath("sounds/whoosh.wav");
+    app.audio().preload(coinSound_);
+    app.audio().preload(whooshSound_);
+
     // Show 360 world units vertically on any screen (720p, Deck 800p, 4K...).
     camera_.referenceHeight = 360.0f;
 
@@ -138,6 +144,16 @@ void DemoGame::onFixedUpdate(core::Application& app, float dt)
         if (glm::distance(c.position, playerPos_) < 24.0f) {
             spawnBurst(c.position, 30, colors::Yellow);
             popups_.push_back({c.position, 1.0f}); // "+1" floats up from the coin
+            {
+                // Pan by where the coin is on screen; vary the pitch a little so
+                // repeated pickups don't sound identical.
+                const float halfWidth = camera_.viewport().x * 0.5f / camera_.scale();
+                std::uniform_real_distribution<float> pitch(0.95f, 1.1f);
+                audio::PlayParams sound;
+                sound.pan = std::clamp((c.position.x - camera_.position.x) / halfWidth, -1.0f, 1.0f) * 0.8f;
+                sound.pitch = pitch(rng_);
+                app.audio().play(coinSound_, sound);
+            }
             c.position = randomWorldPoint(); // respawn somewhere else
             ++score_;
             app.input().rumble(0.3f, 0.6f, 80);
@@ -173,6 +189,8 @@ void DemoGame::onUpdate(core::Application& app, float dt)
         app.renderer().setVsync(!app.renderer().vsync());
     if (in.keyPressed(SDL_SCANCODE_H))
         showHelp_ = !showHelp_;
+    if (in.keyPressed(SDL_SCANCODE_M))
+        app.audio().setMuted(!app.audio().muted());
 
     // --- Movement input: read every frame, used by the next fixed step ---
     glm::vec2 move(0.0f);
@@ -191,8 +209,10 @@ void DemoGame::onUpdate(core::Application& app, float dt)
         move = stick; // analogue: a partial tilt walks slower
     moveInput_ = move;
 
-    if (in.keyPressed(SDL_SCANCODE_SPACE) || in.gamepadPressed(SDL_GAMEPAD_BUTTON_SOUTH))
+    if (in.keyPressed(SDL_SCANCODE_SPACE) || in.gamepadPressed(SDL_GAMEPAD_BUTTON_SOUTH)) {
         spawnBurst(playerPos_, 60, colors::Blue);
+        app.audio().play(whooshSound_, {.volume = 0.8f});
+    }
 
     // --- Zoom: mouse wheel, +/- keys, gamepad bumpers ---
     float zoomDelta = in.mouseWheel() * 0.1f;
@@ -302,11 +322,15 @@ void DemoGame::onRender(core::Application& app, gfx::FrameContext& frame)
     const bool pad = app.input().hasGamepad();
     info.color = pad ? colors::Green : Color(1.0f, 1.0f, 1.0f, 0.5f);
     batch_->drawText(font_, pad ? "Gamepad" : "Keyboard & mouse", {viewport.x - 16.0f * ui, 34.0f * ui}, info);
+    if (app.audio().muted()) {
+        info.color = colors::Yellow;
+        batch_->drawText(font_, "Muted", {viewport.x - 16.0f * ui, 56.0f * ui}, info);
+    }
 
     // Bottom: a help panel, sized to fit its text.
     if (showHelp_) {
         const char* help = "WASD / left stick: move      Space / (A): burst\n"
-                           "Wheel / bumpers: zoom      V: vsync      H: hide help";
+                           "Wheel / bumpers: zoom      M: mute      V: vsync      H: hide help";
         TextStyle style = hud;
         style.size = 16.0f * ui;
         style.align = TextAlign::Center;

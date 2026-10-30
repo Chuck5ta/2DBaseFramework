@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio/Audio.h"
 #include "core/Input.h"
 #include "core/Window.h"
 #include "gfx/Renderer.h"
@@ -42,6 +43,7 @@ public:
 struct AppConfig {
     WindowDesc window;
     gfx::RendererConfig renderer;
+    audio::AudioDesc audio;
     double fixedTimestep = 1.0 / 60.0;
     // Validation layers: on in debug builds by default. Can also be forced
     // with the environment variable GAME_VALIDATION=1 (or 0).
@@ -70,6 +72,7 @@ public:
     Input& input()              { return *input_; }
     gfx::VulkanContext& gpu()   { return *context_; }
     gfx::Renderer& renderer()   { return *renderer_; }
+    audio::AudioEngine& audio() { return *audio_; }
     const AppConfig& config() const { return config_; }
 
     double time() const               { return time_; }          // seconds since start
@@ -84,6 +87,7 @@ private:
     std::unique_ptr<Input> input_;
     std::unique_ptr<gfx::VulkanContext> context_;
     std::unique_ptr<gfx::Renderer> renderer_;
+    std::unique_ptr<audio::AudioEngine> audio_;
 
     bool running_ = false;
     double time_ = 0.0;

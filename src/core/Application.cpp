@@ -45,11 +45,13 @@ Application::Application(const AppConfig& config)
     ctxDesc.validation = config_.validation;
     context_ = std::make_unique<gfx::VulkanContext>(*window_, ctxDesc);
     renderer_ = std::make_unique<gfx::Renderer>(*context_, *window_, config_.renderer);
+    audio_ = std::make_unique<audio::AudioEngine>(config_.audio);
 }
 
 Application::~Application()
 {
     // Order matters: GPU objects before the device, the device before the window.
+    audio_.reset();
     renderer_.reset();
     context_.reset();
     input_.reset();
@@ -132,6 +134,7 @@ int Application::run(Game& game)
         }
         alpha_ = float(accumulator / fixedStep);
         game.onUpdate(*this, float(dt));
+        audio_->update(); // release sounds that finished
         if (!running_)
             break;
 

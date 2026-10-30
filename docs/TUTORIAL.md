@@ -6,7 +6,7 @@ every step you can build and run the game and see the result.
 
 **What you'll learn:** the `Game` hooks, drawing sprites, loading textures, keyboard and
 gamepad input, the fixed timestep with interpolation, cameras, culling, simple particles,
-a HUD and text.
+a HUD, text and sound.
 
 **Before you start:** the project builds and runs (see [BUILDING.md](BUILDING.md)). For
 background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -21,6 +21,7 @@ background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
 | [6](#step-6--coins-and-particles) | Coins to collect, particle bursts | Gameplay! |
 | [7](#step-7--a-hud) | A second camera for screen-space UI | Score and gamepad indicator |
 | [8](#step-8--text) | A font, HUD text and world-space text | Score, FPS, help panel, "+1" popups |
+| [9](#step-9--sound) | Sound effects with `app.audio()` | A chime per coin, a whoosh per burst; **M** mutes |
 
 > Every code listing in this tutorial was compiled (with warnings as errors) and run with
 > Vulkan validation enabled, step by step. If something doesn't work, compare with
@@ -967,6 +968,126 @@ Things to notice:
 shown at the top right, and a help panel sits at the bottom (**H** hides it). Collect a
 coin and a "+1" floats up and fades away.
 
+---
+
+## Step 9 — Sound
+
+The framework plays audio with **miniaudio**. `Application` owns an
+**`audio::AudioEngine`**, reached with `app.audio()`. It opens the default output device
+at startup and releases finished sounds every frame for you. If the PC has no audio
+device, the game still runs: every audio call quietly does nothing.
+
+The project ships two small sound effects in `assets/sounds/`: `coin.wav` and
+`whoosh.wav` (CC0; see the README there). WAV, FLAC, MP3 and OGG Vorbis all work.
+
+| `PlayParams` field | Meaning |
+|---|---|
+| `volume` | Linear gain; 1 = as recorded, 0.5 = half |
+| `pitch` | Playback rate; 2 = an octave higher (and twice as fast) |
+| `pan` | -1 = left, 0 = centre, +1 = right |
+| `loop` | Plays until you call `app.audio().stop(handle)` |
+| `spatial`, `position`, … | 3D sound relative to a listener (used in the Game3D tutorial) |
+
+`play()` returns a **`SoundHandle`**. Keep it if you want to change or stop the sound
+later; for one-shot effects you can ignore it.
+
+In **`MyGame.h`**, add the sound file paths at the end of the members:
+
+```cpp
+    // Sound files (full paths, filled in onInit).
+    std::string coinSound_;
+    std::string whooshSound_;
+```
+
+and `#include <string>` to the includes.
+
+In **`MyGame.cpp`**, load the sounds at the end of `onInit`:
+
+```cpp
+    // Sounds: decode them now so the first play has no delay.
+    coinSound_ = core::assetPath("sounds/coin.wav");
+    whooshSound_ = core::assetPath("sounds/whoosh.wav");
+    app.audio().preload(coinSound_);
+    app.audio().preload(whooshSound_);
+```
+
+In `onFixedUpdate`, play the chime when a coin is collected. Add this block right after
+the `popups_.push_back(...)` line from step 8:
+
+```cpp
+            {
+                // Pan by where the coin is on screen; vary the pitch a little so
+                // repeated pickups don't sound identical.
+                const float halfWidth = camera_.viewport().x * 0.5f / camera_.scale();
+                std::uniform_real_distribution<float> pitch(0.95f, 1.1f);
+                audio::PlayParams sound;
+                sound.pan = std::clamp((c.position.x - camera_.position.x) / halfWidth, -1.0f, 1.0f) * 0.8f;
+                sound.pitch = pitch(rng_);
+                app.audio().play(coinSound_, sound);
+            }
+```
+
+In `onUpdate`, play the whoosh with the burst. The `if` now needs braces:
+
+```cpp
+    if (in.keyPressed(SDL_SCANCODE_SPACE) || in.gamepadPressed(SDL_GAMEPAD_BUTTON_SOUTH)) {
+        spawnBurst(playerPos_, 60, colors::Blue);
+        app.audio().play(whooshSound_, {.volume = 0.8f});
+    }
+```
+
+and toggle mute with **M**, after the help toggle:
+
+```cpp
+    if (in.keyPressed(SDL_SCANCODE_M))
+        app.audio().setMuted(!app.audio().muted());
+```
+
+In the HUD part of `onRender`, show when the game is muted, right after the
+"Gamepad" / "Keyboard & mouse" line:
+
+```cpp
+    if (app.audio().muted()) {
+        info.color = colors::Yellow;
+        batch_->drawText(font_, "Muted", {viewport.x - 16.0f * ui, 56.0f * ui}, info);
+    }
+```
+
+and add `M: mute` to the help text:
+
+```cpp
+        const char* help = "WASD / left stick: move      Space / (A): burst\n"
+                           "Wheel / bumpers: zoom      M: mute      V: vsync      H: hide help";
+```
+
+Things to notice:
+
+- **Preloading.** A sound is decoded the first time it plays and then cached in memory.
+  `preload` does that work in `onInit`, so the first coin doesn't cause a small hitch.
+- **Small variations go a long way.** A random pitch between 0.95 and 1.1 and a pan that
+  follows the coin's position on screen stop repeated pickups from sounding mechanical.
+- **Sounds in `onFixedUpdate`.** It's fine to call `play` from either update hook. It only
+  queues the sound; mixing happens on miniaudio's own thread.
+- **Volumes and mute.** `setMasterVolume`, `setSfxVolume` and `setMusicVolume` are ready
+  for an options menu. `setMuted` silences everything without changing those values.
+- **Too many sounds.** Up to 64 effects play at once (`AppConfig::audio.maxVoices`). After
+  that, the oldest one-shot is cut, so a flood of pickups can't pile up.
+
+**Music.** The demo has no music track, but it's one line once you add a file (OGG
+Vorbis is a good choice: small and loops cleanly). Put it in `assets/music/` and call:
+
+```cpp
+app.audio().playMusic(core::assetPath("music/theme.ogg"), {.fadeInSeconds = 2.0f});
+```
+
+Music is streamed from disk rather than loaded whole, loops by default and is mixed on its
+own volume (`setMusicVolume`, 0.8 by default). Calling `playMusic` again crossfades to the
+new track. `stopMusic(seconds)`, `pauseMusic()` and `resumeMusic()` do what you'd expect.
+
+**Run it:** collecting a coin plays a chime, from the left or right speaker depending on
+where the coin was, and **Space** makes a whoosh. **M** mutes and "Muted" appears at the
+top right.
+
 **That's the complete demo.** Your `MyGame` now behaves exactly like `DemoGame`. You can
 delete `DemoGame.h/.cpp` from your own projects once you no longer need them for reference.
 
@@ -984,6 +1105,7 @@ Ideas, roughly in order of difficulty, each building on what you've used here:
    the visible tiles from a tileset atlas, just like step 4.
 4. **Game states.** A title screen, pause menu and game-over screen: a small state enum in
    `MyGame`, switched on in `onUpdate`/`onRender`, with text from step 8.
-5. **Sound.** SDL3's audio streams, or a library such as miniaudio.
+5. **Music and atmosphere.** A track with `playMusic`, a quieter one for menus, and a
+   crossfade between them when the game state changes.
 6. **Physics.** Box2D v3 for proper collisions and rigid bodies, stepped in
    `onFixedUpdate`.

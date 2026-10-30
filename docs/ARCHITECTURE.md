@@ -28,28 +28,32 @@ decisions for the game built on top.
 
 ## 2. Layered structure
 
-The code is split into four layers. Each layer only depends on the layers below it.
+The code is split into layers. Each layer only depends on the layers below it.
 
 ```mermaid
 flowchart TD
     game["game/  (DemoGame or your game)"]
     r2d["render2d/  SpriteBatch · Camera2D · Font"]
     core["core/  Application · Window · Input · Paths · Log"]
+    aud["audio/  AudioEngine (miniaudio)"]
     gfx["gfx/  VulkanContext · Swapchain · Renderer · Buffer · Image · Texture · Pipeline · Descriptors"]
-    third["Third party: SDL3 · volk · Vulkan-Headers · VMA · GLM · stb_image"]
+    third["Third party: SDL3 · volk · Vulkan-Headers · VMA · GLM · stb · miniaudio"]
 
     game --> r2d
     game --> core
     r2d --> gfx
     core --> gfx
+    core --> aud
     gfx --> third
     core --> third
+    aud --> third
 ```
 
 | Layer | Namespace | Responsibility | Shared with Game3D |
 |---|---|---|---|
 | `src/core` | `core` | Program lifetime, main loop, window, input, file paths, logging | Yes, identical |
 | `src/gfx` | `gfx` | Everything Vulkan: device, swapchain, frames, memory, textures, pipelines | Yes, identical |
+| `src/audio` | `audio` | Sound effects, music, 3D sound (miniaudio) | Yes, identical |
 | `src/render2d` | `render2d` | 2D rendering on top of `gfx`: sprites, cameras, text | Yes, identical (Game3D uses it for its HUD) |
 | `src/game` | (global) | The actual game; replaceable | No |
 
@@ -68,6 +72,9 @@ src/
     Input.h/.cpp              keyboard / mouse / gamepad state per frame
     Paths.h/.cpp              basePath(), shaderPath(), assetPath()
     Log.h                     LOG_* macros, core::fatal()
+  audio/
+    Audio.h/.cpp              AudioEngine: effects, music, 3D listener, mixer
+    MiniaudioImpl.cpp         miniaudio + stb_vorbis implementation unit
   gfx/
     VkCommon.h                single Vulkan include (vulkan.h + volk + VMA), VK_CHECK
     Implementations.cpp       VMA, stb_image and stb_truetype implementation units
@@ -88,6 +95,7 @@ src/
 shaders/                      GLSL sources (compiled to SPIR-V at build time)
 assets/                       runtime data (copied next to the executable)
   fonts/                      Roboto Medium + its licence
+  sounds/                     demo sound effects (CC0) + README
 cmake/                        Dependencies.cmake, Shaders.cmake
 ```
 
@@ -101,7 +109,8 @@ cmake/                        Dependencies.cmake, Shaders.cmake
 Construction order (and reverse destruction order) is significant:
 
 1. `SDL_Init(VIDEO | GAMEPAD)`
-2. `Window` → 3. `Input` → 4. `gfx::VulkanContext` → 5. `gfx::Renderer`
+2. `Window` → 3. `Input` → 4. `gfx::VulkanContext` → 5. `gfx::Renderer` →
+   6. `audio::AudioEngine`
 
 Its destructor tears down in exactly the reverse order, then calls `SDL_Quit()`.
 
@@ -215,6 +224,50 @@ atlas/sprite-sheet sub-rectangles and flipping. `stats()` reports sprites and dr
 with `SpriteBatch::drawText(font, utf8, position, TextStyle)`; `TextStyle` sets size,
 colour, alignment (`Left`/`Center`/`Right`), line spacing and pixel snapping.
 
+### 3.4 audio
+
+**`audio::AudioEngine`** plays sound effects, music and 3D positional sound with
+[miniaudio](https://miniaud.io). `Application` creates it after the renderer (from
+`AppConfig::audio`, an `audio::AudioDesc`) and games reach it with `app.audio()`. The
+module depends only on miniaudio, GLM and `core/Log.h`; it never touches Vulkan.
+
+```mermaid
+flowchart LR
+    play["play(path, PlayParams)"] --> voice["Voice pool<br/>(max 64, oldest one-shot cut)"]
+    cache["Decoded-sound cache<br/>(preload / first play)"] -.->|"shares PCM data"| voice
+    voice --> sfx["sfx group<br/>setSfxVolume"]
+    music["playMusic(path)<br/>streamed from disk, crossfades"] --> mus["music group<br/>setMusicVolume"]
+    sfx --> eng["ma_engine endpoint<br/>setMasterVolume · setMuted"]
+    mus --> eng
+    lis["setListener(pos, forward, up)"] -.->|"spatial sounds only"| voice
+    eng --> dev["Audio device<br/>(mixed on miniaudio's thread)"]
+```
+
+- **Sound effects** are decoded into memory the first time a file is played (or by
+  `preload`) and cached, so later plays start instantly and share the same data. Each
+  `play` returns a `SoundHandle` (a unique id that is never reused); stale handles are
+  ignored, so a game can keep handles without tracking when sounds end.
+- **`PlayParams`**: `volume`, `pitch`, `pan`, `loop`, and for 3D sounds `spatial`,
+  `position`, `minDistance`, `maxDistance`, `rolloff` (inverse-distance attenuation).
+- **3D sound** is relative to a single listener set with `setListener(position, forward,
+  up)`, in the same right-handed, +Y-up axes as `Camera3D`. Use mono files for spatial
+  sounds.
+- **Music** is one streamed track at a time (`playMusic`, `stopMusic`, `pauseMusic`,
+  `resumeMusic`). Starting a new track fades the old one out over
+  `MusicParams::fadeOutPreviousSeconds`. Music is never spatialised.
+- **Mixer**: master, sfx and music volumes, plus `setMuted`, which silences everything
+  without changing the volumes.
+- **`update()`** is called by `Application` once per frame, after `onUpdate`. It releases
+  voices that have finished playing; nothing else in the game loop depends on audio.
+- **No device, no problem.** If no output device can be opened (or `GAME_AUDIO=0` is
+  set, or `AudioDesc::enabled` is false), a warning is logged and every call becomes a
+  no-op. `AudioDesc::noDevice` runs the mixer without a device so tests can pull samples
+  with `readFrames()`.
+- Formats: WAV, FLAC and MP3 (built into miniaudio) and OGG Vorbis (stb_vorbis, shipped
+  with miniaudio). The implementation is compiled once in `audio/MiniaudioImpl.cpp`.
+- **Threading.** Call the API from the game thread. Mixing runs on miniaudio's device
+  thread; miniaudio handles the synchronisation.
+
 ---
 
 ## 4. Object ownership and lifetime
@@ -227,6 +280,8 @@ flowchart LR
     app --> inp["Input"]
     app --> ctx["gfx::VulkanContext"]
     app --> ren["gfx::Renderer"]
+    app --> aud["audio::AudioEngine"]
+    aud --> voices["Voices + sound cache + music stream"]
     ren --> sc["Swapchain"]
     ren --> fr["Frame[N]: cmd pool, cmd buffer, imageAvailable, fence"]
     ctx --> vma["VMA allocator"]
@@ -271,6 +326,7 @@ sequenceDiagram
             App->>G: onFixedUpdate(fixedStep)
         end
         App->>G: onUpdate(dt)
+        App->>App: audio.update() (release finished sounds)
         App->>R: beginFrame()
         alt frame available
             App->>G: onResize() (if extent changed)
@@ -446,9 +502,12 @@ in linear**. Data textures (normal maps, masks) should use `TextureDesc::srgb = 
 | VMA | 3.3.0 | GPU memory allocation | header (impl in `Implementations.cpp`) |
 | GLM | 1.0.1 | vector/matrix math | headers |
 | stb | pinned commit | image loading (stb_image), font rasterisation (stb_truetype) | header (impl in `Implementations.cpp`) |
+| miniaudio | 0.11.23 | audio output, mixing, decoding (WAV/FLAC/MP3, OGG via its bundled stb_vorbis), 3D sound | header (impl in `audio/MiniaudioImpl.cpp`) |
 
 Global definitions: `VK_NO_PROTOTYPES`, `GLM_FORCE_DEPTH_ZERO_TO_ONE`,
-`GLM_FORCE_RADIANS`.
+`GLM_FORCE_RADIANS`. On Linux, `third_party` also links `pthread`, `dl` and `m` for
+miniaudio, which loads ALSA/PulseAudio/PipeWire/JACK at run time (no audio dev packages
+needed to build).
 
 **Shaders** (`cmake/Shaders.cmake`): every `shaders/*.vert|*.frag|*.comp` is compiled to
 `<exe dir>/shaders/<name>.spv` with `glslc` or `glslangValidator` (from the Vulkan SDK or
@@ -473,6 +532,9 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 - **Debug names** are attached to buffers, images and views via `VK_EXT_debug_utils`, so
   RenderDoc / Nsight / validation messages show readable names.
 - **Testing aid:** `GAME_MAX_FRAMES=N` exits after N rendered frames (smoke tests, CI).
+- **Audio problems are never fatal.** A missing device logs a warning and the game runs
+  silently; a sound file that fails to load logs one warning per file and `play`
+  returns an empty handle. `GAME_AUDIO=0` turns audio off entirely.
 
 ---
 
@@ -503,7 +565,8 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 
 | Decision | Rationale | Trade-off |
 |---|---|---|
-| SDL3 as the platform layer | Best gamepad/Steam Deck support, X11 + Wayland, audio available later | One external dependency in the core |
+| SDL3 as the platform layer | Best gamepad/Steam Deck support, X11 + Wayland | One external dependency in the core |
+| miniaudio for audio (not SDL3 audio) | One file; decoding, mixing, groups, fades, streaming and 3D sound built in; picks the best backend on each OS | A second audio layer beside SDL; audio API is our own wrapper, not SDL's |
 | Vulkan 1.3 baseline | Dynamic rendering + sync2 remove most boilerplate; supported by all current desktop drivers and the Deck | Excludes very old GPUs/drivers |
 | volk instead of linking the loader | Friendly error when Vulkan is missing; faster device-level calls | Function pointers instead of prototypes |
 | VMA for memory | Correct, efficient suballocation without writing an allocator | Third-party header |
@@ -512,14 +575,14 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 | Wait-idle on swapchain recreation | Simplest correct approach | Brief stall on resize only |
 | Fonts baked with stb_truetype into a regular texture | One small header, any .ttf, text batches with sprites through the same pipeline | Sharpest near the baked size; bake large titles separately (or switch to MSDF later) |
 | Fixed-timestep simulation | Deterministic gameplay, frame-rate independent | Needs interpolation for smooth rendering |
-| Identical `core/`, `gfx/` and `render2d/` in 2D and 3D | Each project stands alone and is easy to understand | Changes must be copied between projects (or factored into a shared library later) |
+| Identical `core/`, `gfx/`, `audio/` and `render2d/` in 2D and 3D | Each project stands alone and is easy to understand | Changes must be copied between projects (or factored into a shared library later) |
 
 ---
 
 ## 13. Known limitations and roadmap
 
 - Text is baked at one size per `Font`; for very large or zooming text consider MSDF fonts.
-- No audio (SDL3 audio streams or miniaudio).
+- Audio: no effects (reverb, filters), no Doppler, one listener; music is one track at a time.
 - No deferred resource destruction; destroy GPU objects only when idle (see §4).
 - Single queue for graphics/transfer; uploads are blocking (`immediateSubmit`).
 - No bindless textures; batches break on texture changes.

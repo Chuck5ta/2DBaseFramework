@@ -22,7 +22,7 @@
 ## 1. Overview
 
 The build uses **CMake** (≥ 3.22). On the first configure, CMake downloads the pinned
-libraries (SDL3, Vulkan headers, volk, VMA, GLM, stb), so the first build needs **Git** and
+libraries (SDL3, Vulkan headers, volk, VMA, GLM, stb, miniaudio), so the first build needs **Git** and
 an internet connection. Later builds work offline.
 
 | | Windows | Linux | Steam Deck |
@@ -217,6 +217,10 @@ AMD and Intel, or the proprietary NVIDIA driver. Check it works:
 ```bash
 vulkaninfo --summary     # should list your GPU with apiVersion 1.3 or higher
 ```
+
+**Audio** needs nothing extra. miniaudio loads PipeWire, PulseAudio, ALSA or JACK at
+run time, whichever the system has, so there are no audio packages to install for the
+game's own sound (the ALSA/PulseAudio packages above are for SDL3).
 
 ### 3.2 Build and run
 
@@ -450,6 +454,7 @@ directly, so performance is close to native. For release, prefer the native buil
 - Suspend/resume (power button) while the game runs: the swapchain is recreated
   automatically.
 - On-screen keyboard (Steam + X) if the game needs text input.
+- Sound through the speakers and through headphones (plug them in while the game runs).
 
 ---
 
@@ -488,6 +493,8 @@ A short checklist (full details in the Steamworks documentation:
 | Steam Deck / Linux: *version `GLIBC_2.xx' not found* | The binary was built on a newer system than it runs on. Build in the steamrt4 SDK container (§4.3). |
 | Steam Deck: *Permission denied* when launching | Executable bit lost during copying: `chmod +x Game2D`. |
 | Steam Deck: controls act like a keyboard/mouse | Change the controller layout for the shortcut to a gamepad template (§4.5). |
+| No sound | The log shows the device at startup (*Audio: … via WASAPI / PulseAudio / …*). *Audio: no output device* means none was found: the game keeps running silently. Check that `GAME_AUDIO` isn't set to `0`, the game isn't muted (**M** in the demo) and the sound files are in `assets/sounds/` next to the executable. |
+| Linux: *ALSA lib …* or *jack server is not running* lines in the console | Harmless. miniaudio is trying audio backends in turn; it uses the first one that works. |
 | Windows: game window is slow or stutters only in Debug | Debug builds are unoptimised and run validation; compare with `relwithdebinfo` / `release`. |
 
 ---
@@ -510,6 +517,7 @@ A short checklist (full details in the Steamworks documentation:
 |---|---|
 | `GAME_VALIDATION=0/1` | Force Vulkan validation off/on (default: on in Debug builds) |
 | `GAME_MAX_FRAMES=N` | Quit after N rendered frames (smoke tests, CI) |
+| `GAME_AUDIO=0` | Turn audio off (no device is opened; every sound call does nothing) |
 | `SDL_VIDEO_DRIVER=x11/wayland` | Force the Linux windowing backend |
 | `VK_ICD_FILENAMES` / `VK_DRIVER_FILES` | Force a specific Vulkan driver (advanced; e.g. testing with a software renderer) |
 
@@ -526,6 +534,7 @@ cmake --fresh --preset debug         # re-configure from scratch (CMake 3.24+)
 
 - Vulkan SDK: <https://vulkan.lunarg.com/sdk/home>
 - SDL3: <https://wiki.libsdl.org/SDL3/FrontPage>
+- miniaudio: <https://miniaud.io/docs/manual/index.html>
 - Steam Deck devkit / loading builds: <https://partner.steamgames.com/doc/steamdeck/loadgames>
 - Steam Linux Runtime: <https://github.com/ValveSoftware/steam-runtime>
 - Steam Linux Runtime 4.0 SDK: <https://gitlab.steamos.cloud/steamrt/steamrt4/sdk>

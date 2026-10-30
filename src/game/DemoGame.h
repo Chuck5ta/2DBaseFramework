@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <random>
+#include <string>
 #include <vector>
 
 class DemoGame : public core::Game {
@@ -62,4 +63,8 @@ private:
     std::mt19937 rng_{1234};
     std::vector<Popup> popups_;
     bool showHelp_ = true;
+
+    // Sound files (full paths, filled in onInit).
+    std::string coinSound_;
+    std::string whooshSound_;
 };

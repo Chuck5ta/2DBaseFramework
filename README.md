@@ -2,7 +2,7 @@
 
 A small, engine-free base for 2D games on **Windows, Linux and Steam Deck**.
 You own all the code: a thin platform layer (SDL3), a Vulkan 1.3 renderer,
-and a batched sprite renderer, plus a playable demo showing how they fit together.
+a batched sprite renderer and audio, plus a playable demo showing how they fit together.
 
 | Layer | What it does | Library |
 |---|---|---|
@@ -10,6 +10,7 @@ and a batched sprite renderer, plus a playable demo showing how they fit togethe
 | GPU | Instance/device setup, swapchain, frames in flight, buffers, textures, pipelines | Vulkan 1.3 via volk + VMA |
 | 2D | Sprite batching, orthographic camera, atlas UVs, rect/line helpers | your code |
 | Text | TrueType fonts baked into an atlas, UTF-8, kerning, alignment, world or screen space | stb_truetype |
+| Audio | Sound effects (pitch, pan, volume), streamed music with crossfades, mixer, mute | miniaudio |
 | Math / images | Vectors & matrices, PNG/JPG loading | GLM, stb_image |
 
 All dependencies are downloaded automatically by CMake at a pinned version.
@@ -96,6 +97,8 @@ src/
     Input               keyboard, mouse, gamepad (pressed / down / released)
     Paths               shaderPath(), assetPath()
     Log.h               LOG_INFO/WARN/ERROR, core::fatal()
+  audio/                sound effects, music, 3D sound (shared with Game3D)
+    AudioEngine         miniaudio: cached effects, streamed music, listener, mixer
   gfx/                  Vulkan layer (shared with Game3D)
     VulkanContext       instance, GPU selection, device, queues, VMA, immediateSubmit
     Swapchain           creation/recreation, per-image semaphores
@@ -111,11 +114,12 @@ src/
   game/
     DemoGame            the example — replace with your game
 shaders/                GLSL; every *.vert/*.frag/*.comp is compiled automatically
-assets/                 copied next to the exe (fonts/ has Roboto Medium, Apache 2.0)
+assets/                 copied next to the exe (fonts/: Roboto Medium, Apache 2.0;
+                        sounds/: demo effects, CC0)
 cmake/                  dependency + shader build logic
 ```
 
-`core/`, `gfx/` and `render2d/` are identical in Game2D and Game3D, so improvements can be
+`core/`, `gfx/`, `audio/` and `render2d/` are identical in Game2D and Game3D, so improvements can be
 copied between them (or later moved into a shared library).
 
 ---
@@ -180,6 +184,8 @@ Tips
   `core::shaderPath("foo.vert.spv")`.
 - Destroying a texture/buffer that an in-flight frame still uses is an error; call
   `app.renderer().waitIdle()` first (or destroy in `onShutdown`).
+- Sound: `app.audio().play(core::assetPath("sounds/jump.wav"), {.volume = 0.7f})`;
+  music: `app.audio().playMusic(core::assetPath("music/theme.ogg"))`. WAV, FLAC, MP3, OGG.
 - Validation layers are on in Debug builds (set `GAME_VALIDATION=0/1` to override). Keep
   the console clean of validation errors.
 
@@ -189,6 +195,7 @@ Tips
 | Move | WASD / arrows | Left stick / D-pad |
 | Particle burst | Space | A |
 | Zoom | Mouse wheel, + / − | Bumpers |
+| Mute sound | M | |
 | Show/hide help | H | |
 | Toggle vsync | V | |
 | Fullscreen | F11 / Alt+Enter | |
@@ -229,7 +236,7 @@ limits, suspend/resume (swapchain recreation), on-screen keyboard if you need te
 
 ## 7. Where to go next
 
-- **Audio:** SDL3 audio streams, or miniaudio.
+- **Music:** add a track to `assets/music/` and call `app.audio().playMusic(...)`.
 - **Tilemaps:** load Tiled (`.tmj`) maps, draw visible tiles from an atlas.
 - **Physics:** Box2D v3.
 - **Debug UI:** Dear ImGui (`imgui_impl_sdl3` + `imgui_impl_vulkan` work with dynamic rendering).
