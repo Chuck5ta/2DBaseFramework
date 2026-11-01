@@ -6,7 +6,7 @@ every step you can build and run the game and see the result.
 
 **What you'll learn:** the `Game` hooks, drawing sprites, loading textures, keyboard and
 gamepad input, the fixed timestep with interpolation, cameras, culling, simple particles,
-a HUD, text and sound.
+a HUD, text, sound and a debug UI.
 
 **Before you start:** the project builds and runs (see [BUILDING.md](BUILDING.md)). For
 background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -22,6 +22,7 @@ background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
 | [7](#step-7--a-hud) | A second camera for screen-space UI | Score and gamepad indicator |
 | [8](#step-8--text) | A font, HUD text and world-space text | Score, FPS, help panel, "+1" popups |
 | [9](#step-9--sound) | Sound effects with `app.audio()` | A chime per coin, a whoosh per burst; **M** mutes |
+| [10](#step-10--a-debug-ui) | A Dear ImGui window with `onDebugUI` | Live stats, sliders, buttons and debug drawing |
 
 > Every code listing in this tutorial was compiled (with warnings as errors) and run with
 > Vulkan validation enabled, step by step. If something doesn't work, compare with
@@ -1088,6 +1089,159 @@ new track. `stopMusic(seconds)`, `pauseMusic()` and `resumeMusic()` do what you'
 where the coin was, and **Space** makes a whoosh. **M** mutes and "Muted" appears at the
 top right.
 
+---
+
+## Step 10 — A debug UI
+
+While you work on a game you constantly want to see a value, nudge a number or press a
+"do it now" button without restarting. The framework includes
+[Dear ImGui](https://github.com/ocornut/imgui) for exactly that.
+
+Press **`** (the key below Esc) in any step of this tutorial and two things appear: the
+framework's **Engine** window (frame time graph, GPU, vsync, audio volumes, input) and,
+from the checkbox at its bottom, ImGui's own demo window, which shows every widget along
+with the code that makes it. Press **`** again to hide them.
+
+The debug UI exists in **Debug builds only** (`AppConfig::debugUI.enabled`), so players
+never see it. When you ship a Release build it isn't even created.
+
+ImGui is an *immediate-mode* UI: there are no widget objects to create or keep. Every
+frame you call functions that both draw a widget and report what happened to it:
+
+```cpp
+if (ImGui::Button("Respawn"))           // true on the frame it's clicked
+    respawn();
+ImGui::SliderFloat("Speed", &speed_, 0.0f, 500.0f); // edits speed_ directly
+```
+
+You write that code in a new hook, **`Game::onDebugUI`**. It runs once per frame after
+`onUpdate`, and only while the debug UI is visible. That's the only place to call ImGui.
+
+In **`MyGame.h`**, declare the hook after `onRender`,
+
+```cpp
+    void onDebugUI(core::Application& app) override;
+```
+
+and add a flag for some debug drawing at the end of the members:
+
+```cpp
+    bool showPickupRange_ = false; // debug drawing, switched on in the debug UI
+```
+
+In **`MyGame.cpp`**, add `onDebugUI` after `onUpdate`:
+
+```cpp
+void MyGame::onDebugUI(core::Application& app)
+{
+    // Our own window, at the top right the first time it appears, sized to fit
+    // its contents (but no taller than the screen). The framework's "Engine"
+    // window is drawn separately.
+    const float scale = ImGui::GetStyle().FontScaleDpi; // matches the screen's DPI setting
+    const ImVec2 screen = ImGui::GetMainViewport()->Size;
+    ImGui::SetNextWindowPos(ImVec2(screen.x - 12.0f * scale, 90.0f * scale), ImGuiCond_FirstUseEver, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(screen.x, screen.y - 100.0f * scale));
+    if (!ImGui::Begin("Game", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) { // collapsed: skip the contents
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Text("Score: %d", score_);
+    ImGui::Text("Coins: %d   Particles: %d   Popups: %d", int(coins_.size()), int(particles_.size()),
+                int(popups_.size()));
+
+    ImGui::SeparatorText("Player");
+    // Dragging the position teleports the player. Set the previous position too,
+    // or interpolation would show it sliding there.
+    if (ImGui::DragFloat2("Position", &playerPos_.x, 1.0f, 0.0f, kWorldSize, "%.0f"))
+        prevPlayerPos_ = playerPos_;
+    ImGui::Text("Velocity: %.0f, %.0f", double(playerVel_.x), double(playerVel_.y));
+
+    ImGui::SeparatorText("Camera");
+    ImGui::SliderFloat("Zoom", &camera_.zoom, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+
+    ImGui::SeparatorText("Actions");
+    if (ImGui::Button("Burst"))
+        spawnBurst(playerPos_, 60, colors::Blue);
+    ImGui::SameLine();
+    if (ImGui::Button("Scatter coins"))
+        for (Coin& c : coins_)
+            c.position = randomWorldPoint();
+    ImGui::SameLine();
+    if (ImGui::Button("Reset score"))
+        score_ = 0;
+    ImGui::Checkbox("Show pickup range", &showPickupRange_);
+
+    // Our own textures, shown inside the UI.
+    if (ImGui::CollapsingHeader("Textures")) {
+        debugui::DebugUI& ui = *app.debugUI(); // never null inside onDebugUI
+        const ImVec2 size(64.0f * scale, 64.0f * scale);
+        ImGui::Image(ui.texture(playerTexture_), size);
+        ImGui::SameLine();
+        ImGui::Image(ui.texture(tileTexture_), size);
+        ImGui::SameLine();
+        ImGui::Image(ui.texture(orbTexture_), size);
+        ImGui::Text("Font atlas (%u x %u):", font_.texture().width(), font_.texture().height());
+        ImGui::Image(ui.texture(font_.texture()), ImVec2(256.0f * scale, 256.0f * scale));
+    }
+    ImGui::End();
+}
+```
+
+In `onRender`, draw the pickup range when it's switched on. Add this right after the
+player is drawn:
+
+```cpp
+    // --- Debug drawing, switched on in the debug UI ---
+    if (showPickupRange_) {
+        auto circle = [&](glm::vec2 centre, float radius, Color color) {
+            constexpr int kSegments = 32;
+            for (int i = 0; i < kSegments; ++i) {
+                const float a0 = float(i) / kSegments * glm::two_pi<float>();
+                const float a1 = float(i + 1) / kSegments * glm::two_pi<float>();
+                batch_->drawLine(centre + radius * glm::vec2(std::cos(a0), std::sin(a0)),
+                                 centre + radius * glm::vec2(std::cos(a1), std::sin(a1)), 1.5f, color);
+            }
+        };
+        circle(player.position, 24.0f, colors::Green); // the distance tested in onFixedUpdate
+        for (const Coin& c : coins_)
+            circle(c.position, 3.0f, colors::Red);     // where a coin really is (the sprite bobs)
+    }
+```
+
+Finally, add the key to the help text:
+
+```cpp
+        const char* help = "WASD / left stick: move      Space / (A): burst      Wheel / bumpers: zoom\n"
+                           "M: mute      V: vsync      H: hide help      ` (below Esc): debug UI";
+```
+
+Things to notice:
+
+- **Widgets edit your variables directly.** `SliderFloat("Zoom", &camera_.zoom, ...)` reads
+  and writes `camera_.zoom`; there's no copying back and forth. Functions such as
+  `DragFloat2` return `true` when the value changed, for when you need to react (here,
+  keeping the interpolation from sliding).
+- **`Begin`/`End` make a window.** Always call `End`, even when `Begin` returns `false` (the
+  window is collapsed). `SetNextWindowPos` with `ImGuiCond_FirstUseEver` sets where it
+  starts; after that you can drag it anywhere.
+- **Labels are IDs.** Two widgets with the same label in one window clash. Add a hidden
+  suffix to tell them apart: `"Speed##enemy"` shows as "Speed".
+- **Clicks don't leak into the game.** While the mouse is over a debug window, or you are
+  typing into a text field, those events don't reach `app.input()`. (Try zooming with the
+  wheel over a window.)
+- **Debug drawing** is ordinary drawing behind a flag. Here it shows the actual pickup test:
+  the green circle is `24` units around the player, and the red dots are where coins really
+  are. The coin sprites bob up and down, but the collision position doesn't move.
+- **Textures in the UI.** `app.debugUI()->texture(t)` turns any `gfx::Texture` into
+  something `ImGui::Image` can show, including the font atlas from step 8.
+- **ImGui's colours are sRGB.** The framework's ImGui shader converts them for our sRGB
+  swapchain, so colours you pick in ImGui look the same as in any image editor.
+
+**Run it:** press **`**. A "Game" window at the top right shows the score and particle
+count, and lets you drag the player around, zoom, spawn bursts, scatter the coins and show
+the pickup range. Open **Textures** to see the game's textures and the font atlas.
+
 **That's the complete demo.** Your `MyGame` now behaves exactly like `DemoGame`. You can
 delete `DemoGame.h/.cpp` from your own projects once you no longer need them for reference.
 
@@ -1105,7 +1259,9 @@ Ideas, roughly in order of difficulty, each building on what you've used here:
    the visible tiles from a tileset atlas, just like step 4.
 4. **Game states.** A title screen, pause menu and game-over screen: a small state enum in
    `MyGame`, switched on in `onUpdate`/`onRender`, with text from step 8.
-5. **Music and atmosphere.** A track with `playMusic`, a quieter one for menus, and a
+5. **A level editor.** Grow the debug UI into a tool: click the world (convert the mouse
+   with `camera_.screenToWorld`) to place coins when a "Place coins" checkbox is on.
+6. **Music and atmosphere.** A track with `playMusic`, a quieter one for menus, and a
    crossfade between them when the game state changes.
-6. **Physics.** Box2D v3 for proper collisions and rigid bodies, stepped in
+7. **Physics.** Box2D v3 for proper collisions and rigid bodies, stepped in
    `onFixedUpdate`.

@@ -60,7 +60,15 @@ FetchContent_Declare(miniaudio
     GIT_SHALLOW    TRUE
     SOURCE_SUBDIR  _download_only)
 
-FetchContent_MakeAvailable(SDL3 vulkan_headers volk vma glm stb miniaudio)
+# Dear ImGui: immediate-mode debug UI (windows, sliders, graphs). Built below
+# with its SDL3 and Vulkan backends.
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.92.9
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  _download_only)
+
+FetchContent_MakeAvailable(SDL3 vulkan_headers volk vma glm stb miniaudio imgui)
 
 # --- One target that carries Vulkan headers, volk, VMA, GLM, stb, miniaudio ---
 add_library(third_party STATIC ${volk_SOURCE_DIR}/volk.c)
@@ -84,3 +92,19 @@ if(UNIX)
     target_link_libraries(third_party PUBLIC ${CMAKE_DL_LIBS} m)
 endif()
 set_target_properties(third_party PROPERTIES FOLDER "third_party")
+
+# --- Dear ImGui (core + SDL3 and Vulkan backends) --------------------------------
+# A separate library so its sources compile once, without the game's warning
+# flags. The Vulkan backend calls Vulkan through volk, like the rest of the code.
+add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_compile_definitions(imgui PUBLIC IMGUI_IMPL_VULKAN_USE_VOLK IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
+target_link_libraries(imgui PUBLIC SDL3::SDL3 third_party)
+set_target_properties(imgui PROPERTIES FOLDER "third_party")

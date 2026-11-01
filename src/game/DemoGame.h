@@ -20,6 +20,7 @@ public:
     void onFixedUpdate(core::Application& app, float dt) override;
     void onUpdate(core::Application& app, float dt) override;
     void onRender(core::Application& app, gfx::FrameContext& frame) override;
+    void onDebugUI(core::Application& app) override;
 
 private:
     struct Particle {
@@ -67,4 +68,6 @@ private:
     // Sound files (full paths, filled in onInit).
     std::string coinSound_;
     std::string whooshSound_;
+
+    bool showPickupRange_ = false; // debug drawing, switched on in the debug UI
 };

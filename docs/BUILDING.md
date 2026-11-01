@@ -22,7 +22,7 @@
 ## 1. Overview
 
 The build uses **CMake** (≥ 3.22). On the first configure, CMake downloads the pinned
-libraries (SDL3, Vulkan headers, volk, VMA, GLM, stb, miniaudio), so the first build needs **Git** and
+libraries (SDL3, Vulkan headers, volk, VMA, GLM, stb, miniaudio, Dear ImGui), so the first build needs **Git** and
 an internet connection. Later builds work offline.
 
 | | Windows | Linux | Steam Deck |
@@ -37,7 +37,7 @@ an internet connection. Later builds work offline.
 
 | Preset | Use | Output folder |
 |---|---|---|
-| `debug` | Day-to-day development; validation layers on | `build/debug/bin/Debug/` |
+| `debug` | Day-to-day development; validation layers and the debug UI on | `build/debug/bin/Debug/` |
 | `relwithdebinfo` | Profiling: optimised, with debug symbols | `build/relwithdebinfo/bin/RelWithDebInfo/` |
 | `release` | Shipping; no console window on Windows | `build/release/bin/Release/` |
 | `vs2022` / `vs2026` | Generate a Visual Studio solution (Windows only) | `build/vs2022/bin/<Config>/` |
@@ -455,6 +455,9 @@ directly, so performance is close to native. For release, prefer the native buil
   automatically.
 - On-screen keyboard (Steam + X) if the game needs text input.
 - Sound through the speakers and through headphones (plug them in while the game runs).
+- The debug UI (Debug builds) works with the touchscreen, which acts as a mouse. The Deck
+  has no **`** key: in the shortcut's controller settings, bind a spare button (e.g. a back
+  grip) to the keyboard key **`**.
 
 ---
 
@@ -482,6 +485,7 @@ A short checklist (full details in the Steamworks documentation:
 |---|---|
 | CMake: *Could not find git* / download fails | Install Git and make sure it is on the PATH; check the internet connection for the first configure. |
 | CMake error in `cmake/Dependencies.cmake` or `cmake/Shaders.cmake` (e.g. at `add_library`) right after adding a file in Visual Studio | Visual Studio's *Add → New Item* in the *CMake Targets View* inserted the new file into a CMake script. Remove the added path (e.g. `"../src/game/MyGame.h"`) from those scripts and from `CMakeLists.txt`, then *Project → Delete Cache and Reconfigure*. New files under `src/` need no CMake changes; add them via File Explorer or Solution Explorer's *Folder View*. |
+| CMake: *The current CMakeCache.txt directory … is different than the directory … where CMakeCache.txt was created*, or *The source … does not match the source … used to generate cache* | The `build` folder was copied from another copy of the project (e.g. into `WorkingVersion` or a backup). It remembers the folder it was created in, so it can't be reused. Close Visual Studio, delete the project's `build` folder (and `.vs` if present), then reopen the folder: it configures from scratch. When copying a project, leave out `build` and `.vs`: they're generated and rebuilt automatically. |
 | Windows: *'cl' / 'ninja' is not recognized*, or *No CMAKE_CXX_COMPILER could be found* | Use the **Developer PowerShell for VS** or open the folder in Visual Studio, not a plain terminal. |
 | Linux: SDL3 configure error mentioning X11, Xcursor, Wayland… | Install the dev packages from §3.1. The error names the missing one. As a last resort you can disable a feature, e.g. `-DSDL_X11_XCURSOR=OFF`. |
 | *No glslc/glslangValidator found - building glslang from source* | Not an error: no shader compiler was found, so one is built. Install the Vulkan SDK / `glslang-tools` to skip this. If the SDK *is* installed, restart Visual Studio (or your terminal) so it sees `VULKAN_SDK`, then delete the build folder and configure again. |
@@ -493,6 +497,7 @@ A short checklist (full details in the Steamworks documentation:
 | Steam Deck / Linux: *version `GLIBC_2.xx' not found* | The binary was built on a newer system than it runs on. Build in the steamrt4 SDK container (§4.3). |
 | Steam Deck: *Permission denied* when launching | Executable bit lost during copying: `chmod +x Game2D`. |
 | Steam Deck: controls act like a keyboard/mouse | Change the controller layout for the shortcut to a gamepad template (§4.5). |
+| The debug UI doesn't appear | It exists in Debug builds only (`relwithdebinfo` and `release` don't create it). Press the key below Esc (**`**). To keep it in another build, set `config.debugUI.enabled = true` in `main.cpp`. |
 | No sound | The log shows the device at startup (*Audio: … via WASAPI / PulseAudio / …*). *Audio: no output device* means none was found: the game keeps running silently. Check that `GAME_AUDIO` isn't set to `0`, the game isn't muted (**M** in the demo) and the sound files are in `assets/sounds/` next to the executable. |
 | Linux: *ALSA lib …* or *jack server is not running* lines in the console | Harmless. miniaudio is trying audio backends in turn; it uses the first one that works. |
 | Windows: game window is slow or stutters only in Debug | Debug builds are unoptimised and run validation; compare with `relwithdebinfo` / `release`. |
@@ -535,6 +540,7 @@ cmake --fresh --preset debug         # re-configure from scratch (CMake 3.24+)
 - Vulkan SDK: <https://vulkan.lunarg.com/sdk/home>
 - SDL3: <https://wiki.libsdl.org/SDL3/FrontPage>
 - miniaudio: <https://miniaud.io/docs/manual/index.html>
+- Dear ImGui: <https://github.com/ocornut/imgui> (see its wiki and `imgui_demo.cpp`)
 - Steam Deck devkit / loading builds: <https://partner.steamgames.com/doc/steamdeck/loadgames>
 - Steam Linux Runtime: <https://github.com/ValveSoftware/steam-runtime>
 - Steam Linux Runtime 4.0 SDK: <https://gitlab.steamos.cloud/steamrt/steamrt4/sdk>

@@ -34,7 +34,7 @@ add_executable(${PROJECT_NAME} ${GAME_SOURCES})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX "src" FILES ${GAME_SOURCES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 third_party)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 third_party imgui)
 
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /W4 /permissive- /utf-8 /MP)

@@ -227,6 +227,61 @@ void DemoGame::onUpdate(core::Application& app, float dt)
     camera_.position += (renderPos - camera_.position) * (1.0f - std::exp(-6.0f * dt));
 }
 
+void DemoGame::onDebugUI(core::Application& app)
+{
+    // Our own window, at the top right the first time it appears, sized to fit
+    // its contents (but no taller than the screen). The framework's "Engine"
+    // window is drawn separately.
+    const float scale = ImGui::GetStyle().FontScaleDpi; // matches the screen's DPI setting
+    const ImVec2 screen = ImGui::GetMainViewport()->Size;
+    ImGui::SetNextWindowPos(ImVec2(screen.x - 12.0f * scale, 90.0f * scale), ImGuiCond_FirstUseEver, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(screen.x, screen.y - 100.0f * scale));
+    if (!ImGui::Begin("Game", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) { // collapsed: skip the contents
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Text("Score: %d", score_);
+    ImGui::Text("Coins: %d   Particles: %d   Popups: %d", int(coins_.size()), int(particles_.size()),
+                int(popups_.size()));
+
+    ImGui::SeparatorText("Player");
+    // Dragging the position teleports the player. Set the previous position too,
+    // or interpolation would show it sliding there.
+    if (ImGui::DragFloat2("Position", &playerPos_.x, 1.0f, 0.0f, kWorldSize, "%.0f"))
+        prevPlayerPos_ = playerPos_;
+    ImGui::Text("Velocity: %.0f, %.0f", double(playerVel_.x), double(playerVel_.y));
+
+    ImGui::SeparatorText("Camera");
+    ImGui::SliderFloat("Zoom", &camera_.zoom, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+
+    ImGui::SeparatorText("Actions");
+    if (ImGui::Button("Burst"))
+        spawnBurst(playerPos_, 60, colors::Blue);
+    ImGui::SameLine();
+    if (ImGui::Button("Scatter coins"))
+        for (Coin& c : coins_)
+            c.position = randomWorldPoint();
+    ImGui::SameLine();
+    if (ImGui::Button("Reset score"))
+        score_ = 0;
+    ImGui::Checkbox("Show pickup range", &showPickupRange_);
+
+    // Our own textures, shown inside the UI.
+    if (ImGui::CollapsingHeader("Textures")) {
+        debugui::DebugUI& ui = *app.debugUI(); // never null inside onDebugUI
+        const ImVec2 size(64.0f * scale, 64.0f * scale);
+        ImGui::Image(ui.texture(playerTexture_), size);
+        ImGui::SameLine();
+        ImGui::Image(ui.texture(tileTexture_), size);
+        ImGui::SameLine();
+        ImGui::Image(ui.texture(orbTexture_), size);
+        ImGui::Text("Font atlas (%u x %u):", font_.texture().width(), font_.texture().height());
+        ImGui::Image(ui.texture(font_.texture()), ImVec2(256.0f * scale, 256.0f * scale));
+    }
+    ImGui::End();
+}
+
 void DemoGame::onRender(core::Application& app, gfx::FrameContext& frame)
 {
     const glm::vec2 viewport(float(frame.extent.width), float(frame.extent.height));
@@ -286,6 +341,22 @@ void DemoGame::onRender(core::Application& app, gfx::FrameContext& frame)
     player.size.y *= 1.0f + 0.08f * speed01 * std::sin(t * 18.0f);
     batch_->draw(playerTexture_, player);
 
+    // --- Debug drawing, switched on in the debug UI ---
+    if (showPickupRange_) {
+        auto circle = [&](glm::vec2 centre, float radius, Color color) {
+            constexpr int kSegments = 32;
+            for (int i = 0; i < kSegments; ++i) {
+                const float a0 = float(i) / kSegments * glm::two_pi<float>();
+                const float a1 = float(i + 1) / kSegments * glm::two_pi<float>();
+                batch_->drawLine(centre + radius * glm::vec2(std::cos(a0), std::sin(a0)),
+                                 centre + radius * glm::vec2(std::cos(a1), std::sin(a1)), 1.5f, color);
+            }
+        };
+        circle(player.position, 24.0f, colors::Green); // the distance tested in onFixedUpdate
+        for (const Coin& c : coins_)
+            circle(c.position, 3.0f, colors::Red);     // where a coin really is (the sprite bobs)
+    }
+
     // --- "+1" popups: world-space text, drawn last so it's on top ---
     for (const Popup& p : popups_) {
         TextStyle style;
@@ -329,8 +400,8 @@ void DemoGame::onRender(core::Application& app, gfx::FrameContext& frame)
 
     // Bottom: a help panel, sized to fit its text.
     if (showHelp_) {
-        const char* help = "WASD / left stick: move      Space / (A): burst\n"
-                           "Wheel / bumpers: zoom      M: mute      V: vsync      H: hide help";
+        const char* help = "WASD / left stick: move      Space / (A): burst      Wheel / bumpers: zoom\n"
+                           "M: mute      V: vsync      H: hide help      ` (below Esc): debug UI";
         TextStyle style = hud;
         style.size = 16.0f * ui;
         style.align = TextAlign::Center;

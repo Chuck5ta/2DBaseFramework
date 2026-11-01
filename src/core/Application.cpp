@@ -20,6 +20,21 @@ long envInt(const char* name, long fallback)
     return (v && *v) ? std::strtol(v, nullptr, 10) : fallback;
 }
 
+const char* formatName(VkFormat format)
+{
+    switch (format) {
+    case VK_FORMAT_B8G8R8A8_SRGB:  return "B8G8R8A8_SRGB";
+    case VK_FORMAT_R8G8B8A8_SRGB:  return "R8G8B8A8_SRGB";
+    case VK_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
+    case VK_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
+    case VK_FORMAT_D32_SFLOAT:     return "D32_SFLOAT";
+    case VK_FORMAT_D24_UNORM_S8_UINT: return "D24_UNORM_S8_UINT";
+    case VK_FORMAT_D32_SFLOAT_S8_UINT: return "D32_SFLOAT_S8_UINT";
+    case VK_FORMAT_UNDEFINED:      return "none";
+    default:                       return "other";
+    }
+}
+
 } // namespace
 
 Application::Application(const AppConfig& config)
@@ -46,11 +61,14 @@ Application::Application(const AppConfig& config)
     context_ = std::make_unique<gfx::VulkanContext>(*window_, ctxDesc);
     renderer_ = std::make_unique<gfx::Renderer>(*context_, *window_, config_.renderer);
     audio_ = std::make_unique<audio::AudioEngine>(config_.audio);
+    if (config_.debugUI.enabled)
+        debugUI_ = std::make_unique<debugui::DebugUI>(*window_, *context_, *renderer_, config_.debugUI);
 }
 
 Application::~Application()
 {
     // Order matters: GPU objects before the device, the device before the window.
+    debugUI_.reset();
     audio_.reset();
     renderer_.reset();
     context_.reset();
@@ -81,6 +99,10 @@ void Application::pumpEvents()
         default:
             break;
         }
+        // The debug UI sees events first; it keeps clicks and typing meant for
+        // its windows away from the game.
+        if (debugUI_ && debugUI_->processEvent(e))
+            continue;
         input_->handleEvent(e);
     }
 
@@ -138,6 +160,14 @@ int Application::run(Game& game)
         if (!running_)
             break;
 
+        // --- Debug UI (only while visible) ---
+        if (debugUI_ && debugUI_->beginFrame()) {
+            if (config_.debugUI.showEnginePanel)
+                drawEnginePanel();
+            game.onDebugUI(*this);
+            debugUI_->endFrame();
+        }
+
         // --- Rendering ---
         if (gfx::FrameContext* frame = renderer_->beginFrame()) {
             if (frame->extent.width != lastExtent.width || frame->extent.height != lastExtent.height) {
@@ -147,6 +177,8 @@ int Application::run(Game& game)
             game.onPreRender(*this, *frame);
             renderer_->beginMainPass();
             game.onRender(*this, *frame);
+            if (debugUI_)
+                debugUI_->render(frame->cmd); // on top of everything
             renderer_->endMainPass();
             renderer_->endFrame();
 
@@ -155,6 +187,8 @@ int Application::run(Game& game)
         }
 
         // --- FPS counter ---
+        frameTimes_[frameTimeIndex_] = float(dt * 1000.0);
+        frameTimeIndex_ = (frameTimeIndex_ + 1) % frameTimes_.size();
         ++fpsFrames;
         fpsTimer += dt;
         if (fpsTimer >= 0.5) {
@@ -173,6 +207,93 @@ int Application::run(Game& game)
     renderer_->waitIdle();
     game.onShutdown(*this);
     return 0;
+}
+
+void Application::drawEnginePanel()
+{
+    const float ui = ImGui::GetStyle().FontScaleDpi;
+    ImGui::SetNextWindowPos(ImVec2(12.0f * ui, 90.0f * ui), ImGuiCond_FirstUseEver);
+    // Fit the contents, but never taller than the screen (it scrolls instead).
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f),
+                                        ImVec2(10000.0f, ImGui::GetMainViewport()->Size.y - 100.0f * ui));
+    if (!ImGui::Begin("Engine", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::End();
+        return;
+    }
+
+    // Frame time graph (oldest on the left).
+    float average = 0.0f, worst = 0.0f;
+    for (float t : frameTimes_) {
+        average += t;
+        worst = std::max(worst, t);
+    }
+    average /= float(frameTimes_.size());
+    char overlay[64];
+    SDL_snprintf(overlay, sizeof(overlay), "avg %.2f ms   max %.2f ms", double(average), double(worst));
+    ImGui::Text("%.0f fps", double(fps_));
+    ImGui::PlotLines("##frametimes", frameTimes_.data(), int(frameTimes_.size()), int(frameTimeIndex_), overlay, 0.0f,
+                     std::max(34.0f, worst * 1.1f), ImVec2(300.0f * ui, 60.0f * ui));
+
+    if (ImGui::CollapsingHeader("Renderer", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const VkPhysicalDeviceProperties& props = context_->properties();
+        const VkExtent2D extent = renderer_->extent();
+        ImGui::Text("GPU: %s", props.deviceName);
+        ImGui::Text("Vulkan %u.%u.%u", VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion),
+                    VK_API_VERSION_PATCH(props.apiVersion));
+        ImGui::Text("Swapchain: %u x %u, %s", extent.width, extent.height, formatName(renderer_->colorFormat()));
+        ImGui::Text("Depth: %s   Frames in flight: %u", formatName(renderer_->depthFormat()), renderer_->framesInFlight());
+        ImGui::Text("Validation: %s", config_.validation ? "on" : "off");
+        bool vsync = renderer_->vsync();
+        if (ImGui::Checkbox("Vsync", &vsync))
+            renderer_->setVsync(vsync);
+        ImGui::SameLine();
+        bool fullscreen = window_->isFullscreen();
+        if (ImGui::Checkbox("Fullscreen", &fullscreen))
+            window_->setFullscreen(fullscreen);
+    }
+
+    if (ImGui::CollapsingHeader("Audio")) {
+        audio::AudioEngine& a = *audio_;
+        if (!a.available()) {
+            ImGui::TextDisabled("No audio device (or GAME_AUDIO=0)");
+        } else {
+            ImGui::Text("%u Hz, %u sounds playing%s", a.sampleRate(), a.activeSounds(),
+                        a.isMusicPlaying() ? ", music on" : "");
+            bool muted = a.muted();
+            if (ImGui::Checkbox("Mute", &muted))
+                a.setMuted(muted);
+            float master = a.masterVolume(), sfx = a.sfxVolume(), music = a.musicVolume();
+            if (ImGui::SliderFloat("Master", &master, 0.0f, 1.0f))
+                a.setMasterVolume(master);
+            if (ImGui::SliderFloat("Effects", &sfx, 0.0f, 1.0f))
+                a.setSfxVolume(sfx);
+            if (ImGui::SliderFloat("Music", &music, 0.0f, 1.0f))
+                a.setMusicVolume(music);
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Input")) {
+        const glm::vec2 mouse = input_->mousePosition();
+        ImGui::Text("Mouse: %.0f, %.0f (pixels)", double(mouse.x), double(mouse.y));
+        if (input_->hasGamepad())
+            ImGui::Text("Gamepad: %s", input_->gamepadName());
+        else
+            ImGui::TextDisabled("No gamepad connected");
+    }
+
+    ImGui::Separator();
+    ImGui::Checkbox("Dear ImGui demo window", &showImGuiDemo_);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip()) {
+        ImGui::TextUnformatted("Every ImGui widget, with the code that makes it.\n"
+                               "The best reference while writing your own panels.");
+        ImGui::EndTooltip();
+    }
+    ImGui::End();
+
+    if (showImGuiDemo_)
+        ImGui::ShowDemoWindow(&showImGuiDemo_);
 }
 
 } // namespace core

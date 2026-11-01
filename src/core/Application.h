@@ -2,10 +2,12 @@
 
 #include "audio/Audio.h"
 #include "core/Input.h"
+#include "debugui/DebugUI.h"
 #include "core/Window.h"
 #include "gfx/Renderer.h"
 #include "gfx/VulkanContext.h"
 
+#include <array>
 #include <memory>
 
 namespace core {
@@ -38,12 +40,17 @@ public:
 
     // Swapchain size changed (pixels).
     virtual void onResize(Application&, uint32_t /*width*/, uint32_t /*height*/) {}
+
+    // Build your debug windows here with ImGui (see debugui/DebugUI.h). Called
+    // once per frame after onUpdate, only while the debug UI is visible.
+    virtual void onDebugUI(Application&) {}
 };
 
 struct AppConfig {
     WindowDesc window;
     gfx::RendererConfig renderer;
     audio::AudioDesc audio;
+    debugui::DebugUIDesc debugUI;
     double fixedTimestep = 1.0 / 60.0;
     // Validation layers: on in debug builds by default. Can also be forced
     // with the environment variable GAME_VALIDATION=1 (or 0).
@@ -73,6 +80,8 @@ public:
     gfx::VulkanContext& gpu()   { return *context_; }
     gfx::Renderer& renderer()   { return *renderer_; }
     audio::AudioEngine& audio() { return *audio_; }
+    // nullptr when the debug UI is disabled (release builds by default).
+    debugui::DebugUI* debugUI() { return debugUI_.get(); }
     const AppConfig& config() const { return config_; }
 
     double time() const               { return time_; }          // seconds since start
@@ -81,6 +90,7 @@ public:
 
 private:
     void pumpEvents();
+    void drawEnginePanel();
 
     AppConfig config_;
     std::unique_ptr<Window> window_;
@@ -88,11 +98,17 @@ private:
     std::unique_ptr<gfx::VulkanContext> context_;
     std::unique_ptr<gfx::Renderer> renderer_;
     std::unique_ptr<audio::AudioEngine> audio_;
+    std::unique_ptr<debugui::DebugUI> debugUI_;
 
     bool running_ = false;
     double time_ = 0.0;
     float fps_ = 0.0f;
     float alpha_ = 0.0f;
+
+    // Engine panel state: recent frame times (ms) for the graph.
+    std::array<float, 180> frameTimes_{};
+    size_t frameTimeIndex_ = 0;
+    bool showImGuiDemo_ = false;
 };
 
 } // namespace core
