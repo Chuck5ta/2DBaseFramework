@@ -209,6 +209,56 @@ int Application::run(Game& game)
     return 0;
 }
 
+// Every audio effect, live. (A game that sets effects itself, e.g. reverb in a
+// cave, will change these values as you play; they show what is set now.)
+void Application::drawAudioEffects(audio::AudioEngine& a)
+{
+    if (!ImGui::TreeNode("Audio effects"))
+        return;
+    constexpr float kGlide = 0.1f; // short glides keep slider drags smooth
+    const char* busNames[] = {"Sound effects bus", "Music bus", "Master bus"};
+    for (int i = 0; i < 3; ++i) {
+        const audio::Bus bus = audio::Bus(i);
+        if (!ImGui::TreeNode(busNames[i]))
+            continue;
+        float lowPass = a.lowPass(bus);
+        if (ImGui::SliderFloat("Low-pass", &lowPass, 100.0f, audio::kLowPassOff,
+                               lowPass >= audio::kLowPassOff ? "off" : "%.0f Hz", ImGuiSliderFlags_Logarithmic))
+            a.setLowPass(bus, lowPass, kGlide);
+        float highPass = std::max(a.highPass(bus), 20.0f);
+        if (ImGui::SliderFloat("High-pass", &highPass, 20.0f, 5000.0f, highPass <= 20.0f ? "off" : "%.0f Hz",
+                               ImGuiSliderFlags_Logarithmic))
+            a.setHighPass(bus, highPass <= 20.0f ? audio::kHighPassOff : highPass, kGlide);
+        audio::EchoParams echo = a.echo(bus);
+        bool changed = ImGui::SliderFloat("Echo mix", &echo.mix, 0.0f, 1.0f, echo.mix <= 0.0f ? "off" : "%.2f");
+        changed |= ImGui::SliderFloat("Echo delay", &echo.delaySeconds, 0.05f, 2.0f, "%.2f s");
+        changed |= ImGui::SliderFloat("Echo feedback", &echo.feedback, 0.0f, 0.95f);
+        if (changed)
+            a.setEcho(bus, echo, kGlide);
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Reverb (sound effects only)")) {
+        const char* presets[] = {"Off", "Room", "Hall", "Cave"};
+        for (int p = 0; p < 4; ++p) {
+            if (p > 0)
+                ImGui::SameLine();
+            if (ImGui::Button(presets[p]))
+                a.setReverb(audio::ReverbParams::preset(audio::ReverbPreset(p)), 0.3f);
+        }
+        audio::ReverbParams reverb = a.reverb();
+        bool changed = ImGui::SliderFloat("Level", &reverb.level, 0.0f, 1.0f, reverb.level <= 0.0f ? "off" : "%.2f");
+        changed |= ImGui::SliderFloat("Room size", &reverb.roomSize, 0.0f, 1.0f);
+        changed |= ImGui::SliderFloat("Damping", &reverb.damping, 0.0f, 1.0f);
+        changed |= ImGui::SliderFloat("Width", &reverb.width, 0.0f, 1.0f);
+        if (changed)
+            a.setReverb(reverb, kGlide);
+        ImGui::TreePop();
+    }
+    if (ImGui::Button("Reset all effects"))
+        a.resetEffects();
+    ImGui::TreePop();
+}
+
 void Application::drawEnginePanel()
 {
     const float ui = ImGui::GetStyle().FontScaleDpi;
@@ -257,8 +307,8 @@ void Application::drawEnginePanel()
         if (!a.available()) {
             ImGui::TextDisabled("No audio device (or GAME_AUDIO=0)");
         } else {
-            ImGui::Text("%u Hz, %u sounds playing%s", a.sampleRate(), a.activeSounds(),
-                        a.isMusicPlaying() ? ", music on" : "");
+            ImGui::Text("%u Hz   Sounds playing: %u%s", a.sampleRate(), a.activeSounds(),
+                        a.isMusicPlaying() ? "   Music: on" : "");
             bool muted = a.muted();
             if (ImGui::Checkbox("Mute", &muted))
                 a.setMuted(muted);
@@ -269,6 +319,7 @@ void Application::drawEnginePanel()
                 a.setSfxVolume(sfx);
             if (ImGui::SliderFloat("Music", &music, 0.0f, 1.0f))
                 a.setMusicVolume(music);
+            drawAudioEffects(a);
         }
     }
 

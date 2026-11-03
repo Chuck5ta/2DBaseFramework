@@ -78,6 +78,7 @@ src/
     Log.h                     LOG_* macros, core::fatal()
   audio/
     Audio.h/.cpp              AudioEngine: effects, music, 3D listener, mixer
+    Effects.h/.cpp            effect nodes: filters, echo, reverb, smooth glides (internal)
     MiniaudioImpl.cpp         miniaudio + stb_vorbis implementation unit
   debugui/
     DebugUI.h/.cpp            Dear ImGui setup, input sharing, rendering, textures
@@ -245,11 +246,17 @@ module depends only on miniaudio, GLM and `core/Log.h`; it never touches Vulkan.
 flowchart LR
     play["play(path, PlayParams)"] --> voice["Voice pool<br/>(max 64, oldest one-shot cut)"]
     cache["Decoded-sound cache<br/>(preload / first play)"] -.->|"shares PCM data"| voice
-    voice --> sfx["sfx group<br/>setSfxVolume"]
-    music["playMusic(path)<br/>streamed from disk, crossfades"] --> mus["music group<br/>setMusicVolume"]
-    sfx --> eng["ma_engine endpoint<br/>setMasterVolume · setMuted"]
-    mus --> eng
     lis["setListener(pos, forward, up)"] -.->|"spatial sounds only"| voice
+    voice --> vfx["Per-voice effects<br/>own low-pass"]
+    vfx -->|"dry"| sfx["sfx group<br/>setSfxVolume"]
+    vfx -->|"× reverbSend"| rev["Reverb<br/>setReverb"]
+    rev --> sfx
+    sfx --> sbus["Sfx bus<br/>high-pass · low-pass · echo"]
+    music["playMusic(path)<br/>streamed from disk, crossfades"] --> mus["music group<br/>setMusicVolume"]
+    mus --> mbus["Music bus<br/>high-pass · low-pass · echo"]
+    sbus --> master["Master bus<br/>high-pass · low-pass · echo"]
+    mbus --> master
+    master --> eng["ma_engine endpoint<br/>setMasterVolume · setMuted"]
     eng --> dev["Audio device<br/>(mixed on miniaudio's thread)"]
 ```
 
@@ -257,8 +264,9 @@ flowchart LR
   `preload`) and cached, so later plays start instantly and share the same data. Each
   `play` returns a `SoundHandle` (a unique id that is never reused); stale handles are
   ignored, so a game can keep handles without tracking when sounds end.
-- **`PlayParams`**: `volume`, `pitch`, `pan`, `loop`, and for 3D sounds `spatial`,
-  `position`, `minDistance`, `maxDistance`, `rolloff` (inverse-distance attenuation).
+- **`PlayParams`**: `volume`, `pitch`, `pan`, `loop`, for 3D sounds `spatial`,
+  `position`, `minDistance`, `maxDistance`, `rolloff` (inverse-distance attenuation), and
+  the sound's own effects: `lowPassHz` and `reverbSend`.
 - **3D sound** is relative to a single listener set with `setListener(position, forward,
   up)`, in the same right-handed, +Y-up axes as `Camera3D`. Use mono files for spatial
   sounds.
@@ -267,6 +275,19 @@ flowchart LR
   `MusicParams::fadeOutPreviousSeconds`. Music is never spatialised.
 - **Mixer**: master, sfx and music volumes, plus `setMuted`, which silences everything
   without changing the volumes.
+- **Effects** (`audio/Effects.h/.cpp`, internal). Each bus (`Bus::Sfx`, `Bus::Music`,
+  `Bus::Master`) has a custom miniaudio node with a high-pass (12 dB/octave), a
+  low-pass (24 dB/octave) and an echo (a stereo delay line with feedback, up to 2 s). Every
+  playing sound effect has its own node with a low-pass and a send to the shared
+  **reverb** (verblib, a Freeverb implementation bundled with miniaudio). The reverb's
+  output joins the sound-effects group, so the effects volume and the Sfx bus filters
+  apply to the tail too; music never reaches it.
+- **Glides.** Setters store a target that the audio thread approaches exponentially
+  (`SmoothParam`, updated every 64 frames; filters glide in log-frequency so a sweep sounds
+  even). Nothing clicks, and the game thread never waits on the audio thread. A filter at
+  its "off" value is skipped entirely, and the reverb does no work while its level is 0.
+  The bus and reverb nodes keep processing after their inputs stop, so echo and reverb
+  tails finish naturally.
 - **`update()`** is called by `Application` once per frame, after `onUpdate`. It releases
   voices that have finished playing; nothing else in the game loop depends on audio.
 - **No device, no problem.** If no output device can be opened (or `GAME_AUDIO=0` is
@@ -638,6 +659,7 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 | Decision | Rationale | Trade-off |
 |---|---|---|
 | SDL3 as the platform layer | Best gamepad/Steam Deck support, X11 + Wayland | One external dependency in the core |
+| Effects as our own miniaudio nodes, with parameters smoothed on the audio thread | One node per bus and per voice keeps the graph fixed; glides make every change click-free; the game thread never blocks | Effects are fixed (filters, echo, reverb), not a general effects rack; adding one means writing a node in `Effects.cpp` |
 | miniaudio for audio (not SDL3 audio) | One file; decoding, mixing, groups, fades, streaming and 3D sound built in; picks the best backend on each OS | A second audio layer beside SDL; audio API is our own wrapper, not SDL's |
 | Vulkan 1.3 baseline | Dynamic rendering + sync2 remove most boilerplate; supported by all current desktop drivers and the Deck | Excludes very old GPUs/drivers |
 | volk instead of linking the loader | Friendly error when Vulkan is missing; faster device-level calls | Function pointers instead of prototypes |
@@ -655,7 +677,8 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 ## 13. Known limitations and roadmap
 
 - Text is baked at one size per `Font`; for very large or zooming text consider MSDF fonts.
-- Audio: no effects (reverb, filters), no Doppler, one listener; music is one track at a time.
+- Audio: no Doppler, one listener; music is one track at a time. One shared reverb (no
+  per-zone reverbs mixed together); occlusion is up to the game (see the Game3D tutorial).
 - No deferred resource destruction; destroy GPU objects only when idle (see §4).
 - Single queue for graphics/transfer; uploads are blocking (`immediateSubmit`).
 - No bindless textures; batches break on texture changes.

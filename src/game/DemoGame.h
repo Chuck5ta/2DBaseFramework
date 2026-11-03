@@ -70,4 +70,8 @@ private:
     std::string whooshSound_;
 
     bool showPickupRange_ = false; // debug drawing, switched on in the debug UI
+
+    // Which sound zone the player is in (effects change when this changes).
+    bool inCave_ = false;
+    bool inPond_ = false;
 };

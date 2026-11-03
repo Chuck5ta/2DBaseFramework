@@ -23,6 +23,14 @@ constexpr int kWorldTiles = 64;        // the world is 64 x 64 tiles
 constexpr float kWorldSize = kTileSize * kWorldTiles;
 constexpr int kCoinCount = 24;
 
+// Sound zones near the start: reverb inside the cave, muffled sound in the pond.
+struct Zone {
+    glm::vec2 min, max; // world units
+    bool contains(glm::vec2 p) const { return p.x >= min.x && p.y >= min.y && p.x <= max.x && p.y <= max.y; }
+};
+constexpr Zone kCave{{20 * kTileSize, 26 * kTileSize}, {28 * kTileSize, 38 * kTileSize}};
+constexpr Zone kPond{{36 * kTileSize, 28 * kTileSize}, {45 * kTileSize, 36 * kTileSize}};
+
 // A 32x32 grey tile with a slightly darker top/left edge, generated in code.
 // Tinting it with two colours gives a checkerboard.
 gfx::Texture makeTileTexture(gfx::VulkanContext& gpu)
@@ -225,6 +233,20 @@ void DemoGame::onUpdate(core::Application& app, float dt)
     // --- Camera smoothly follows the (interpolated) player ---
     const glm::vec2 renderPos = glm::mix(prevPlayerPos_, playerPos_, app.interpolationAlpha());
     camera_.position += (renderPos - camera_.position) * (1.0f - std::exp(-6.0f * dt));
+
+    // --- Sound zones: change the effects only when the player enters or leaves ---
+    const bool inCave = kCave.contains(playerPos_);
+    if (inCave != inCave_) {
+        inCave_ = inCave;
+        const auto preset = inCave ? audio::ReverbPreset::Cave : audio::ReverbPreset::Off;
+        app.audio().setReverb(audio::ReverbParams::preset(preset), 0.6f); // fade in/out over 0.6 s
+    }
+    const bool inPond = kPond.contains(playerPos_);
+    if (inPond != inPond_) {
+        inPond_ = inPond;
+        // Under water: only the low frequencies get through.
+        app.audio().setLowPass(audio::Bus::Sfx, inPond ? 700.0f : audio::kLowPassOff, 0.4f);
+    }
 }
 
 void DemoGame::onDebugUI(core::Application& app)
@@ -251,6 +273,12 @@ void DemoGame::onDebugUI(core::Application& app)
     if (ImGui::DragFloat2("Position", &playerPos_.x, 1.0f, 0.0f, kWorldSize, "%.0f"))
         prevPlayerPos_ = playerPos_;
     ImGui::Text("Velocity: %.0f, %.0f", double(playerVel_.x), double(playerVel_.y));
+    ImGui::Text("Sound zone: %s", inCave_ ? "cave (reverb)" : inPond_ ? "pond (muffled)" : "none");
+    if (ImGui::Button("Go to the cave"))
+        playerPos_ = prevPlayerPos_ = (kCave.min + kCave.max) * 0.5f;
+    ImGui::SameLine();
+    if (ImGui::Button("Go to the pond"))
+        playerPos_ = prevPlayerPos_ = (kPond.min + kPond.max) * 0.5f;
 
     ImGui::SeparatorText("Camera");
     ImGui::SliderFloat("Zoom", &camera_.zoom, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
@@ -310,6 +338,18 @@ void DemoGame::onRender(core::Application& app, gfx::FrameContext& frame)
 
     // --- World border ---
     batch_->drawRectOutline({0.0f, 0.0f}, glm::vec2(kWorldSize), 4.0f, Color(0.1f, 0.1f, 0.15f, 1.0f));
+
+    // --- Sound zones: a dark cave and a pond, with a label at the top of each ---
+    batch_->drawRect(kCave.min, kCave.max - kCave.min, Color(0.05f, 0.04f, 0.08f, 0.6f));
+    batch_->drawRectOutline(kCave.min, kCave.max - kCave.min, 3.0f, Color(0.02f, 0.02f, 0.03f, 0.9f));
+    batch_->drawRect(kPond.min, kPond.max - kPond.min, Color(0.15f, 0.45f, 0.95f, 0.45f));
+    batch_->drawRectOutline(kPond.min, kPond.max - kPond.min, 3.0f, Color(0.6f, 0.85f, 1.0f, 0.8f));
+    TextStyle label;
+    label.size = 18.0f;
+    label.align = TextAlign::Center;
+    label.color = Color(1.0f, 1.0f, 1.0f, 0.6f);
+    batch_->drawText(font_, "CAVE", {(kCave.min.x + kCave.max.x) * 0.5f, kCave.min.y + 8.0f}, label);
+    batch_->drawText(font_, "POND", {(kPond.min.x + kPond.max.x) * 0.5f, kPond.min.y + 8.0f}, label);
 
     // --- Coins: bob up and down and pulse ---
     for (const Coin& c : coins_) {

@@ -6,7 +6,7 @@ every step you can build and run the game and see the result.
 
 **What you'll learn:** the `Game` hooks, drawing sprites, loading textures, keyboard and
 gamepad input, the fixed timestep with interpolation, cameras, culling, simple particles,
-a HUD, text, sound and a debug UI.
+a HUD, text, sound, audio effects and a debug UI.
 
 **Before you start:** the project builds and runs (see [BUILDING.md](BUILDING.md)). For
 background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -23,6 +23,7 @@ background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
 | [8](#step-8--text) | A font, HUD text and world-space text | Score, FPS, help panel, "+1" popups |
 | [9](#step-9--sound) | Sound effects with `app.audio()` | A chime per coin, a whoosh per burst; **M** mutes |
 | [10](#step-10--a-debug-ui) | A Dear ImGui window with `onDebugUI` | Live stats, sliders, buttons and debug drawing |
+| [11](#step-11--sound-zones-reverb-and-muffling) | Audio effects: reverb and a low-pass filter | A cave that echoes and a pond that muffles |
 
 > Every code listing in this tutorial was compiled (with warnings as errors) and run with
 > Vulkan validation enabled, step by step. If something doesn't work, compare with
@@ -1242,6 +1243,119 @@ Things to notice:
 count, and lets you drag the player around, zoom, spawn bursts, scatter the coins and show
 the pickup range. Open **Textures** to see the game's textures and the font atlas.
 
+---
+
+## Step 11 — Sound zones: reverb and muffling
+
+Effects make a place sound like a place. The audio engine has four:
+
+| Effect | What it does | Typical use |
+|---|---|---|
+| **Low-pass** | Lets only the low frequencies through ("muffles") | Under water, behind a wall, a pause menu, being stunned |
+| **High-pass** | Lets only the high frequencies through ("thin") | A radio, a phone, a tiny speaker |
+| **Echo** | Distinct repeats after a delay | A canyon, a long corridor |
+| **Reverb** | A room's reflections blending into a tail | A cave, a hall, a bathroom |
+
+Low-pass, high-pass and echo work on a **bus**: `audio::Bus::Sfx` (all sound effects),
+`Bus::Music` or `Bus::Master` (everything). The **reverb** is shared: every sound effect
+sends some of itself to it, and music never does. Each sound can also have its **own**
+low-pass, for one sound behind a wall (the Game3D tutorial uses that).
+
+Every change **glides** to the new value (0.3 seconds by default, or the time you pass),
+because a filter that snaps on sounds like a glitch.
+
+This step adds two zones next to the start: a **cave** that turns on a cave reverb, and a
+**pond** that muffles the sound effects while you're in the water.
+
+In **`MyGame.h`**, add the zone state at the end of the members:
+
+```cpp
+    // Which sound zone the player is in (effects change when this changes).
+    bool inCave_ = false;
+    bool inPond_ = false;
+```
+
+In **`MyGame.cpp`**, describe the zones with the other constants, after `kCoinCount`:
+
+```cpp
+// Sound zones near the start: reverb inside the cave, muffled sound in the pond.
+struct Zone {
+    glm::vec2 min, max; // world units
+    bool contains(glm::vec2 p) const { return p.x >= min.x && p.y >= min.y && p.x <= max.x && p.y <= max.y; }
+};
+constexpr Zone kCave{{20 * kTileSize, 26 * kTileSize}, {28 * kTileSize, 38 * kTileSize}};
+constexpr Zone kPond{{36 * kTileSize, 28 * kTileSize}, {45 * kTileSize, 36 * kTileSize}};
+```
+
+At the end of `onUpdate`, after the camera code, change the effects when the player enters
+or leaves a zone:
+
+```cpp
+    // --- Sound zones: change the effects only when the player enters or leaves ---
+    const bool inCave = kCave.contains(playerPos_);
+    if (inCave != inCave_) {
+        inCave_ = inCave;
+        const auto preset = inCave ? audio::ReverbPreset::Cave : audio::ReverbPreset::Off;
+        app.audio().setReverb(audio::ReverbParams::preset(preset), 0.6f); // fade in/out over 0.6 s
+    }
+    const bool inPond = kPond.contains(playerPos_);
+    if (inPond != inPond_) {
+        inPond_ = inPond;
+        // Under water: only the low frequencies get through.
+        app.audio().setLowPass(audio::Bus::Sfx, inPond ? 700.0f : audio::kLowPassOff, 0.4f);
+    }
+```
+
+In `onRender`, draw the zones after the world border (so coins and the player are drawn
+on top of them):
+
+```cpp
+    // --- Sound zones: a dark cave and a pond, with a label at the top of each ---
+    batch_->drawRect(kCave.min, kCave.max - kCave.min, Color(0.05f, 0.04f, 0.08f, 0.6f));
+    batch_->drawRectOutline(kCave.min, kCave.max - kCave.min, 3.0f, Color(0.02f, 0.02f, 0.03f, 0.9f));
+    batch_->drawRect(kPond.min, kPond.max - kPond.min, Color(0.15f, 0.45f, 0.95f, 0.45f));
+    batch_->drawRectOutline(kPond.min, kPond.max - kPond.min, 3.0f, Color(0.6f, 0.85f, 1.0f, 0.8f));
+    TextStyle label;
+    label.size = 18.0f;
+    label.align = TextAlign::Center;
+    label.color = Color(1.0f, 1.0f, 1.0f, 0.6f);
+    batch_->drawText(font_, "CAVE", {(kCave.min.x + kCave.max.x) * 0.5f, kCave.min.y + 8.0f}, label);
+    batch_->drawText(font_, "POND", {(kPond.min.x + kPond.max.x) * 0.5f, kPond.min.y + 8.0f}, label);
+```
+
+Finally, in `onDebugUI`, show the zone and add two shortcuts, after the "Velocity" line:
+
+```cpp
+    ImGui::Text("Sound zone: %s", inCave_ ? "cave (reverb)" : inPond_ ? "pond (muffled)" : "none");
+    if (ImGui::Button("Go to the cave"))
+        playerPos_ = prevPlayerPos_ = (kCave.min + kCave.max) * 0.5f;
+    ImGui::SameLine();
+    if (ImGui::Button("Go to the pond"))
+        playerPos_ = prevPlayerPos_ = (kPond.min + kPond.max) * 0.5f;
+```
+
+Things to notice:
+
+- **Change effects on transitions, not every frame.** The code remembers which zone the
+  player was in and calls the audio engine only when that changes. Calling `setReverb`
+  every frame would work, but would restart the glide each time.
+- **Presets are a starting point.** `ReverbParams::preset(ReverbPreset::Cave)` returns
+  plain numbers (`level`, `roomSize`, `damping`, `width`), so you can tweak them:
+  `auto cave = ReverbParams::preset(ReverbPreset::Cave); cave.level = 0.8f;`.
+- **Only sound effects are muffled under water.** The low-pass is on `Bus::Sfx`. Music
+  would stay clear; use `Bus::Master` to muffle everything (a pause menu, say).
+- **The reverb tail outlives the sound.** A coin chime is short, but in the cave its
+  reverb keeps ringing for a couple of seconds. Leaving the cave fades it out.
+- **Keeping a sound dry.** Interface sounds such as menu clicks shouldn't echo in a cave:
+  play them with `{.reverbSend = 0.0f}`.
+- **Try every effect live.** In the debug UI, open **Engine → Audio → Audio effects** for
+  sliders on each bus, reverb presets and a reset button. When you find values you like,
+  copy them into your code.
+
+**Run it:** walk left into the dark **CAVE** and press **Space**: the whoosh rings on in
+the cave. Collect a coin there and the chime rings on too. Walk right into the **POND**: the
+same sounds become dull and muffled, and they're clear again as soon as you step out.
+
 **That's the complete demo.** Your `MyGame` now behaves exactly like `DemoGame`. You can
 delete `DemoGame.h/.cpp` from your own projects once you no longer need them for reference.
 
@@ -1262,6 +1376,7 @@ Ideas, roughly in order of difficulty, each building on what you've used here:
 5. **A level editor.** Grow the debug UI into a tool: click the world (convert the mouse
    with `camera_.screenToWorld`) to place coins when a "Place coins" checkbox is on.
 6. **Music and atmosphere.** A track with `playMusic`, a quieter one for menus, and a
-   crossfade between them when the game state changes.
+   crossfade between them when the game state changes. A pause menu that muffles
+   everything with `setLowPass(audio::Bus::Master, 500.0f)`.
 7. **Physics.** Box2D v3 for proper collisions and rigid bodies, stepped in
    `onFixedUpdate`.

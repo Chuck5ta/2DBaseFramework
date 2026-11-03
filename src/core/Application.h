@@ -91,6 +91,7 @@ public:
 private:
     void pumpEvents();
     void drawEnginePanel();
+    void drawAudioEffects(audio::AudioEngine& audio);
 
     AppConfig config_;
     std::unique_ptr<Window> window_;

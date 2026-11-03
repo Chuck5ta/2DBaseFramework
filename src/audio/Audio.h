@@ -8,6 +8,12 @@
 //   app.audio().setPosition(h, newPosition);
 //   app.audio().playMusic(core::assetPath("music/theme.ogg"), {.fadeInSeconds = 2.0f});
 //
+// Effects (every change glides smoothly, so nothing clicks):
+//   app.audio().setLowPass(audio::Bus::Sfx, 600.0f);             // muffle effects (underwater)
+//   app.audio().setReverb(audio::ReverbParams::preset(audio::ReverbPreset::Cave));
+//   app.audio().setEcho(audio::Bus::Sfx, {.delaySeconds = 0.4f, .feedback = 0.4f, .mix = 0.5f});
+//   app.audio().setLowPass(handle, 800.0f);                      // one sound behind a wall
+//
 // Supported formats: WAV, FLAC, MP3 and OGG Vorbis.
 // All functions are meant to be called from the main (game) thread. If no audio
 // device is available the engine runs silently: every call is a harmless no-op.
@@ -19,6 +25,37 @@
 #include <string>
 
 namespace audio {
+
+// Filter cutoffs in Hz. A low-pass at kLowPassOff or a high-pass at kHighPassOff
+// lets everything through (and costs nothing).
+inline constexpr float kLowPassOff = 20000.0f;
+inline constexpr float kHighPassOff = 0.0f;
+
+// Where an effect is applied. Sound effects and music each have a bus, and both
+// go through the master bus (so a master effect changes everything).
+enum class Bus { Sfx, Music, Master };
+
+// Distinct repeats of the sound (a canyon, a long corridor).
+struct EchoParams {
+    float delaySeconds = 0.35f; // time between repeats (up to 2 s)
+    float feedback = 0.35f;     // 0..0.95: how much of each repeat comes back again
+    float mix = 0.0f;           // loudness of the repeats; 0 = off
+};
+
+enum class ReverbPreset { Off, Room, Hall, Cave };
+
+// The shared reverb: a room's reflections, blending into a tail. Every sound
+// effect sends some of itself to it (PlayParams::reverbSend, default all of it);
+// music never does. Its output joins the sound effects, so the effects volume and
+// Bus::Sfx filters apply to it too.
+struct ReverbParams {
+    float level = 0.0f;    // loudness of the reverb; 0 = off
+    float roomSize = 0.5f; // 0..1: longer tail as it grows
+    float damping = 0.5f;  // 0..1: higher = the tail loses its high frequencies faster (darker)
+    float width = 1.0f;    // 0 = mono, 1 = wide stereo
+
+    static ReverbParams preset(ReverbPreset preset);
+};
 
 struct AudioDesc {
     bool enabled = true;          // false: never open a device (also: env var GAME_AUDIO=0)
@@ -50,6 +87,9 @@ struct PlayParams {
     float minDistance = 1.0f;  // full volume up to this distance
     float maxDistance = 100.0f;// no further quietening beyond this distance
     float rolloff = 1.0f;      // how quickly volume falls with distance (inverse model)
+    // Effects for this sound only (both can change later, see setLowPass/setReverbSend).
+    float lowPassHz = kLowPassOff; // e.g. 800 to muffle a sound behind a wall
+    float reverbSend = 1.0f;       // share sent to the reverb; 0 keeps it dry (UI sounds)
 };
 
 struct MusicParams {
@@ -88,6 +128,8 @@ public:
     void setPitch(SoundHandle sound, float pitch);
     void setPan(SoundHandle sound, float pan);
     void setPosition(SoundHandle sound, const glm::vec3& position);
+    void setLowPass(SoundHandle sound, float cutoffHz, float glideSeconds = 0.1f);
+    void setReverbSend(SoundHandle sound, float amount, float glideSeconds = 0.1f);
 
     // --- Music (streamed from disk, one track at a time) -----------------------
     bool playMusic(const std::string& path, const MusicParams& params = {});
@@ -105,6 +147,18 @@ public:
     float musicVolume() const;
     void setMuted(bool muted);   // silences everything without losing the volume settings
     bool muted() const;
+
+    // --- Effects -------------------------------------------------------------------
+    // Each change glides to the new value over glideSeconds (0 = instantly).
+    void setLowPass(Bus bus, float cutoffHz, float glideSeconds = 0.3f);   // muffle: kLowPassOff = off
+    void setHighPass(Bus bus, float cutoffHz, float glideSeconds = 0.3f);  // thin (radio): kHighPassOff = off
+    void setEcho(Bus bus, const EchoParams& echo, float glideSeconds = 0.3f);
+    void setReverb(const ReverbParams& reverb, float glideSeconds = 0.5f);
+    void resetEffects(float glideSeconds = 0.3f); // every bus effect and the reverb off
+    float lowPass(Bus bus) const;
+    float highPass(Bus bus) const;
+    EchoParams echo(Bus bus) const;
+    ReverbParams reverb() const;
 
     // --- 3D listener (usually the camera) ---------------------------------------
     // Right-handed, +Y up by default, like Camera3D.

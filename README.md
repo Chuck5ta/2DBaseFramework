@@ -10,7 +10,7 @@ a batched sprite renderer and audio, plus a playable demo showing how they fit t
 | GPU | Instance/device setup, swapchain, frames in flight, buffers, textures, pipelines | Vulkan 1.3 via volk + VMA |
 | 2D | Sprite batching, orthographic camera, atlas UVs, rect/line helpers | your code |
 | Text | TrueType fonts baked into an atlas, UTF-8, kerning, alignment, world or screen space | stb_truetype |
-| Audio | Sound effects (pitch, pan, volume), streamed music with crossfades, mixer, mute | miniaudio |
+| Audio | Sound effects (pitch, pan, volume), streamed music with crossfades, mixer, mute; effects: low-pass, high-pass, echo, reverb | miniaudio |
 | Debug UI | In-game tool windows (Debug builds): frame graph, GPU info, volumes, your own sliders and buttons | Dear ImGui |
 | Math / images | Vectors & matrices, PNG/JPG loading | GLM, stb_image |
 
@@ -189,6 +189,9 @@ Tips
   `app.renderer().waitIdle()` first (or destroy in `onShutdown`).
 - Sound: `app.audio().play(core::assetPath("sounds/jump.wav"), {.volume = 0.7f})`;
   music: `app.audio().playMusic(core::assetPath("music/theme.ogg"))`. WAV, FLAC, MP3, OGG.
+- Effects: `app.audio().setReverb(audio::ReverbParams::preset(audio::ReverbPreset::Cave))`,
+  `app.audio().setLowPass(audio::Bus::Sfx, 700.0f)` (muffled), `setEcho`, `setHighPass`.
+  Changes glide smoothly. Try them all live in the debug UI (Engine → Audio → Audio effects).
 - Debug UI: press **`** (below Esc) in a Debug build. Add your own windows by overriding
   `onDebugUI(core::Application&)` and calling ImGui there, e.g.
   `ImGui::SliderFloat("Speed", &speed_, 0.0f, 500.0f);`.
