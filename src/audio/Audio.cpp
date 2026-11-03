@@ -5,7 +5,11 @@
 
 #include <SDL3/SDL_stdinc.h>
 
+#include <glm/geometric.hpp>
+
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -24,6 +28,54 @@ constexpr int kBusCount = 3;
 int busIndex(Bus bus)
 {
     return std::clamp(int(bus), 0, kBusCount - 1);
+}
+
+// Velocity of something the game moves with setPosition/setListener, estimated
+// once per frame from how far it moved.
+struct Motion {
+    glm::vec3 position{0.0f};
+    glm::vec3 last{0.0f};
+    glm::vec3 velocity{0.0f};
+    bool automatic = true; // false once the game sets the velocity itself
+    bool hasLast = false;
+
+    void track(float dt, float speedOfSound)
+    {
+        if (!automatic)
+            return;
+        if (hasLast && dt > 0.0f) {
+            const glm::vec3 measured = (position - last) / dt;
+            if (glm::length(measured) > speedOfSound) {
+                velocity = glm::vec3(0.0f); // faster than sound: a teleport, not real motion
+            } else {
+                // Smooth over ~0.1 s, so frame-time jitter doesn't wobble the pitch.
+                velocity += (measured - velocity) * (1.0f - std::exp(-dt / 0.08f));
+            }
+        }
+        last = position;
+        hasLast = true;
+    }
+};
+
+// Same formula as miniaudio's (from the OpenAL spec), for dopplerPitch().
+// `toListener` points from the sound to the listener.
+float dopplerRatio(glm::vec3 toListener, glm::vec3 soundVelocity, glm::vec3 listenerVelocity, float c, float factor)
+{
+    const float length = glm::length(toListener);
+    if (length == 0.0f || factor <= 0.0f)
+        return 1.0f;
+    const float vls = std::min(glm::dot(toListener, listenerVelocity) / length, c / factor);
+    const float vss = std::min(glm::dot(toListener, soundVelocity) / length, c / factor);
+    return (c - factor * vls) / (c - factor * vss);
+}
+
+// Keeps a speed low enough that the pitch can't run away: miniaudio's formula
+// divides by (speedOfSound - factor * speed), which reaches zero at the speed of sound.
+glm::vec3 limitSpeed(glm::vec3 v, float speedOfSound, float factor)
+{
+    const float maxSpeed = 0.3f * speedOfSound / std::max(factor, 1e-3f);
+    const float speed = glm::length(v);
+    return speed > maxSpeed ? v * (maxSpeed / speed) : v;
 }
 
 // What the game last asked for on each bus (the audio thread glides towards it).
@@ -50,6 +102,9 @@ ReverbParams ReverbParams::preset(ReverbPreset preset)
 struct Voice {
     ma_sound sound{};
     std::unique_ptr<detail::VoiceNode> fx; // its own low-pass and reverb send (null without effects)
+    bool spatial = false;
+    float doppler = 1.0f; // this sound's own factor (× the engine's)
+    Motion motion;
     uint32_t id = 0;
     uint64_t order = 0; // start order, used to pick a voice to cut when full
     bool loop = false;
@@ -83,6 +138,30 @@ struct AudioEngine::Impl {
     float master = 1.0f, sfx = 1.0f, musicVolume = 0.8f;
     bool muted = false;
     std::unordered_set<std::string> warned;
+
+    // Doppler
+    float dopplerFactor = 1.0f;
+    float speedOfSound = 343.0f;
+    Motion listener;
+    std::chrono::steady_clock::time_point lastUpdate = std::chrono::steady_clock::now();
+
+    float voiceFactor(const Voice& v) const { return std::max(v.doppler, 0.0f) * dopplerFactor; }
+
+    // Sends velocities (limited, see limitSpeed) to miniaudio.
+    void applyMotion()
+    {
+        float maxFactor = dopplerFactor;
+        for (auto& v : voices)
+            if (v->spatial) {
+                const float f = voiceFactor(*v);
+                maxFactor = std::max(maxFactor, f);
+                const glm::vec3 vel = limitSpeed(v->motion.velocity, speedOfSound, f);
+                ma_sound_set_velocity(&v->sound, vel.x, vel.y, vel.z);
+            }
+        const glm::vec3 lv = limitSpeed(listener.velocity, speedOfSound, maxFactor);
+        ma_engine_listener_set_velocity(&engine, 0, lv.x, lv.y, lv.z);
+    }
+
 
     void warnOnce(const std::string& path, ma_result result)
     {
@@ -253,6 +332,8 @@ AudioEngine::AudioEngine(const AudioDesc& desc)
     setMasterVolume(desc.masterVolume);
     setSfxVolume(desc.sfxVolume);
     setMusicVolume(desc.musicVolume);
+    setSpeedOfSound(desc.speedOfSound);
+    setDopplerFactor(desc.dopplerFactor);
 
     if (ma_device* device = ma_engine_get_device(&m.engine))
         LOG_INFO("Audio: %s via %s, %u Hz", device->playback.name, ma_get_backend_name(device->pContext->backend),
@@ -270,9 +351,24 @@ bool AudioEngine::available() const
 
 void AudioEngine::update()
 {
+    const auto now = std::chrono::steady_clock::now();
+    const float dt = std::chrono::duration<float>(now - impl_->lastUpdate).count();
+    update(dt);
+}
+
+void AudioEngine::update(float dtSeconds)
+{
     Impl& m = *impl_;
+    m.lastUpdate = std::chrono::steady_clock::now();
     if (!m.engineOk)
         return;
+
+    // Doppler: velocities from how far things moved since the last frame.
+    for (auto& v : m.voices)
+        if (v->spatial)
+            v->motion.track(dtSeconds, m.speedOfSound);
+    m.listener.track(dtSeconds, m.speedOfSound);
+    m.applyMotion();
 
     // Sounds that reached their end or were stopped (including after a fade).
     auto finished = [](ma_sound* s) { return !ma_sound_is_playing(s); };
@@ -362,6 +458,10 @@ SoundHandle AudioEngine::play(const std::string& path, const PlayParams& p)
         ma_sound_set_min_distance(s, p.minDistance);
         ma_sound_set_max_distance(s, p.maxDistance);
         ma_sound_set_rolloff(s, p.rolloff);
+        v->spatial = true;
+        v->doppler = std::max(p.doppler, 0.0f);
+        v->motion.position = p.position;
+        ma_sound_set_doppler_factor(s, m.voiceFactor(*v));
     } else {
         ma_sound_set_pan(s, std::clamp(p.pan, -1.0f, 1.0f));
     }
@@ -419,8 +519,31 @@ void AudioEngine::setPan(SoundHandle h, float pan)
 
 void AudioEngine::setPosition(SoundHandle h, const glm::vec3& position)
 {
-    if (Voice* v = impl_->find(h))
+    if (Voice* v = impl_->find(h)) {
         ma_sound_set_position(&v->sound, position.x, position.y, position.z);
+        v->motion.position = position;
+    }
+}
+
+void AudioEngine::setVelocity(SoundHandle h, const glm::vec3& velocity)
+{
+    if (Voice* v = impl_->find(h)) {
+        v->motion.automatic = false;
+        v->motion.velocity = velocity;
+        const glm::vec3 limited = limitSpeed(velocity, impl_->speedOfSound, impl_->voiceFactor(*v));
+        ma_sound_set_velocity(&v->sound, limited.x, limited.y, limited.z);
+    }
+}
+
+float AudioEngine::dopplerPitch(SoundHandle h) const
+{
+    const Impl& m = *impl_;
+    Voice* v = impl_->find(h);
+    if (!v || !v->spatial)
+        return 1.0f;
+    const float f = m.voiceFactor(*v);
+    return dopplerRatio(m.listener.position - v->motion.position, limitSpeed(v->motion.velocity, m.speedOfSound, f),
+                        limitSpeed(m.listener.velocity, m.speedOfSound, f), m.speedOfSound, f);
 }
 
 void AudioEngine::setLowPass(SoundHandle h, float cutoffHz, float glideSeconds)
@@ -570,6 +693,46 @@ void AudioEngine::setListener(const glm::vec3& position, const glm::vec3& forwar
     ma_engine_listener_set_position(&m.engine, 0, position.x, position.y, position.z);
     ma_engine_listener_set_direction(&m.engine, 0, forward.x, forward.y, forward.z);
     ma_engine_listener_set_world_up(&m.engine, 0, up.x, up.y, up.z);
+    m.listener.position = position;
+}
+
+void AudioEngine::setListenerVelocity(const glm::vec3& velocity)
+{
+    Impl& m = *impl_;
+    m.listener.automatic = false;
+    m.listener.velocity = velocity;
+    if (m.engineOk)
+        m.applyMotion();
+}
+
+void AudioEngine::setDopplerFactor(float factor)
+{
+    Impl& m = *impl_;
+    m.dopplerFactor = std::max(factor, 0.0f);
+    if (!m.engineOk)
+        return;
+    for (auto& v : m.voices)
+        if (v->spatial)
+            ma_sound_set_doppler_factor(&v->sound, m.voiceFactor(*v));
+    m.applyMotion();
+}
+
+float AudioEngine::dopplerFactor() const
+{
+    return impl_->dopplerFactor;
+}
+
+void AudioEngine::setSpeedOfSound(float unitsPerSecond)
+{
+    Impl& m = *impl_;
+    m.speedOfSound = std::max(unitsPerSecond, 1.0f);
+    if (m.engineOk)
+        ma_spatializer_listener_set_speed_of_sound(&m.engine.listeners[0], m.speedOfSound);
+}
+
+float AudioEngine::speedOfSound() const
+{
+    return impl_->speedOfSound;
 }
 
 uint32_t AudioEngine::sampleRate() const

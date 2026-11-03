@@ -14,6 +14,10 @@
 //   app.audio().setEcho(audio::Bus::Sfx, {.delaySeconds = 0.4f, .feedback = 0.4f, .mix = 0.5f});
 //   app.audio().setLowPass(handle, 800.0f);                      // one sound behind a wall
 //
+// Doppler: a moving 3D sound rises in pitch as it approaches and falls as it moves
+// away. Velocities are worked out from setPosition()/setListener() calls each
+// frame, so moving things with setPosition is all it takes.
+//
 // Supported formats: WAV, FLAC, MP3 and OGG Vorbis.
 // All functions are meant to be called from the main (game) thread. If no audio
 // device is available the engine runs silently: every call is a harmless no-op.
@@ -67,6 +71,10 @@ struct AudioDesc {
     // readFrames() instead (automated tests, recording to a file).
     bool noDevice = false;
     uint32_t noDeviceSampleRate = 48000;
+    // Doppler (3D sounds). Speed of sound in *your* world units per second: 343 if
+    // one unit is a metre. A factor of 1 is realistic; games often exaggerate (2-3).
+    float speedOfSound = 343.0f;
+    float dopplerFactor = 1.0f; // 0 turns Doppler off everywhere
 };
 
 // Identifies a playing sound. Stays valid until the sound finishes or is
@@ -87,6 +95,7 @@ struct PlayParams {
     float minDistance = 1.0f;  // full volume up to this distance
     float maxDistance = 100.0f;// no further quietening beyond this distance
     float rolloff = 1.0f;      // how quickly volume falls with distance (inverse model)
+    float doppler = 1.0f;      // this sound's Doppler amount (× the engine's factor); 0 = none
     // Effects for this sound only (both can change later, see setLowPass/setReverbSend).
     float lowPassHz = kLowPassOff; // e.g. 800 to muffle a sound behind a wall
     float reverbSend = 1.0f;       // share sent to the reverb; 0 keeps it dry (UI sounds)
@@ -110,7 +119,9 @@ public:
     // false when audio is disabled or no device could be opened.
     bool available() const;
 
-    // Called by Application once per frame: releases finished sounds.
+    // Called by Application once per frame with the frame time: releases finished
+    // sounds and works out velocities for Doppler. update() measures the time itself.
+    void update(float dtSeconds);
     void update();
 
     // --- Sound effects ---------------------------------------------------------
@@ -128,6 +139,11 @@ public:
     void setPitch(SoundHandle sound, float pitch);
     void setPan(SoundHandle sound, float pan);
     void setPosition(SoundHandle sound, const glm::vec3& position);
+    // Normally worked out from setPosition calls. Set it yourself if you know it
+    // (e.g. from physics); from then on that sound uses only the velocity you set.
+    void setVelocity(SoundHandle sound, const glm::vec3& velocity);
+    // Pitch change from Doppler right now: 1 = none, 1.06 = 6% higher.
+    float dopplerPitch(SoundHandle sound) const;
     void setLowPass(SoundHandle sound, float cutoffHz, float glideSeconds = 0.1f);
     void setReverbSend(SoundHandle sound, float amount, float glideSeconds = 0.1f);
 
@@ -164,6 +180,14 @@ public:
     // Right-handed, +Y up by default, like Camera3D.
     void setListener(const glm::vec3& position, const glm::vec3& forward,
                      const glm::vec3& up = {0.0f, 1.0f, 0.0f});
+    // Like setVelocity, for the listener: only needed if you know it better.
+    void setListenerVelocity(const glm::vec3& velocity);
+
+    // --- Doppler ---------------------------------------------------------------------
+    void setDopplerFactor(float factor);     // 0 = off, 1 = realistic, >1 = exaggerated
+    float dopplerFactor() const;
+    void setSpeedOfSound(float unitsPerSecond);
+    float speedOfSound() const;
 
     // --- Advanced ----------------------------------------------------------------
     uint32_t sampleRate() const;

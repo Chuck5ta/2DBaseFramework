@@ -266,10 +266,20 @@ flowchart LR
   ignored, so a game can keep handles without tracking when sounds end.
 - **`PlayParams`**: `volume`, `pitch`, `pan`, `loop`, for 3D sounds `spatial`,
   `position`, `minDistance`, `maxDistance`, `rolloff` (inverse-distance attenuation), and
-  the sound's own effects: `lowPassHz` and `reverbSend`.
+  the sound's own effects: `lowPassHz` and `reverbSend`, and its `doppler` amount.
 - **3D sound** is relative to a single listener set with `setListener(position, forward,
   up)`, in the same right-handed, +Y-up axes as `Camera3D`. Use mono files for spatial
   sounds.
+- **Doppler.** Spatial sounds rise in pitch as they approach the listener and fall as
+  they move away (miniaudio's spatializer, using the OpenAL formula). In `update(dt)`,
+  each spatial sound's and the listener's velocity is estimated from how far it moved
+  since the last frame (smoothed over ~0.1 s; a jump faster than sound counts as a
+  teleport, not motion), unless the game sets it with `setVelocity` /
+  `setListenerVelocity`. Velocities are capped at 0.3 × speed of sound ÷ factor, because
+  the formula divides by (speed of sound − factor × speed). Settings: `speedOfSound` (in
+  world units/s; 343 = metres) and `dopplerFactor` globally, `PlayParams::doppler` per
+  sound. `dopplerPitch(handle)` reports the current shift. Non-spatial sounds and music
+  never shift. 2D games get Doppler by playing sounds as spatial in the X/Y plane.
 - **Music** is one streamed track at a time (`playMusic`, `stopMusic`, `pauseMusic`,
   `resumeMusic`). Starting a new track fades the old one out over
   `MusicParams::fadeOutPreviousSeconds`. Music is never spatialised.
@@ -288,8 +298,9 @@ flowchart LR
   its "off" value is skipped entirely, and the reverb does no work while its level is 0.
   The bus and reverb nodes keep processing after their inputs stop, so echo and reverb
   tails finish naturally.
-- **`update()`** is called by `Application` once per frame, after `onUpdate`. It releases
-  voices that have finished playing; nothing else in the game loop depends on audio.
+- **`update(dt)`** is called by `Application` once per frame, after `onUpdate`, with the
+  frame time. It releases voices that have finished playing and updates the Doppler
+  velocities; nothing else in the game loop depends on audio.
 - **No device, no problem.** If no output device can be opened (or `GAME_AUDIO=0` is
   set, or `AudioDesc::enabled` is false), a warning is logged and every call becomes a
   no-op. `AudioDesc::noDevice` runs the mixer without a device so tests can pull samples
@@ -414,7 +425,7 @@ sequenceDiagram
             App->>G: onFixedUpdate(fixedStep)
         end
         App->>G: onUpdate(dt)
-        App->>App: audio.update() (release finished sounds)
+        App->>App: audio.update(dt) (release finished sounds, Doppler velocities)
         opt debug UI visible
             App->>G: onDebugUI() (between ImGui NewFrame and Render)
         end
@@ -677,7 +688,7 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 ## 13. Known limitations and roadmap
 
 - Text is baked at one size per `Font`; for very large or zooming text consider MSDF fonts.
-- Audio: no Doppler, one listener; music is one track at a time. One shared reverb (no
+- Audio: one listener (no split-screen); music is one track at a time. One shared reverb (no
   per-zone reverbs mixed together); occlusion is up to the game (see the Game3D tutorial).
 - No deferred resource destruction; destroy GPU objects only when idle (see §4).
 - Single queue for graphics/transfer; uploads are blocking (`immediateSubmit`).

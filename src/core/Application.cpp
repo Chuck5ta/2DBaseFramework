@@ -156,7 +156,7 @@ int Application::run(Game& game)
         }
         alpha_ = float(accumulator / fixedStep);
         game.onUpdate(*this, float(dt));
-        audio_->update(); // release sounds that finished
+        audio_->update(float(dt)); // release finished sounds, track motion for Doppler
         if (!running_)
             break;
 
