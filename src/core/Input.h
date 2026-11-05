@@ -52,6 +52,7 @@ public:
 
     // --- Gamepad ---
     bool hasGamepad() const { return gamepad_ != nullptr; }
+    SDL_Gamepad* gamepad() const { return gamepad_; } // nullptr if none (for labels and type)
     const char* gamepadName() const;
     bool gamepadDown(SDL_GamepadButton button) const;
     bool gamepadPressed(SDL_GamepadButton button) const;

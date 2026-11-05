@@ -6,7 +6,8 @@ every step you can build and run the game and see the result.
 
 **What you'll learn:** the `Game` hooks, drawing sprites, loading textures, keyboard and
 gamepad input, the fixed timestep with interpolation, cameras, culling, simple particles,
-sprite animation, a HUD, text, sound, audio effects and a debug UI.
+sprite animation, a HUD, text, sound, audio effects, a debug UI and rebindable controls
+(input actions).
 
 **Before you start:** the project builds and runs (see [BUILDING.md](BUILDING.md)). For
 background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -25,6 +26,7 @@ background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
 | [10](#step-10--a-debug-ui) | A Dear ImGui window with `onDebugUI` | Live stats, sliders, buttons and debug drawing |
 | [11](#step-11--sound-zones-reverb-and-muffling) | Audio effects: reverb and a low-pass filter | A cave that echoes and a pond that muffles |
 | [12](#step-12--sprite-animation) | Sprite sheets, clips and an Animator | A hopping slime with dust on landing; spinning coins |
+| [13](#step-13--input-actions-and-rebinding) | Named input actions with `app.actions()` | Help text that follows your device; rebinding in the debug UI |
 
 > Every code listing in this tutorial was compiled (with warnings as errors) and run with
 > Vulkan validation enabled, step by step. If something doesn't work, compare with
@@ -1501,6 +1503,248 @@ puff of dust each time it lands), and puffs up happily when you press **Space**.
 spin. In the debug UI, the Game window shows the clip and frame. Slow the animation down
 to see each frame, and open **Textures** to see both sheets.
 
+---
+
+## Step 13 — Input actions and rebinding
+
+So far the game asks about physical keys: "is **D** or **Right** or the d-pad held?". That
+works, but every place that reads input repeats the list, the help text has to be kept in
+step by hand, and players can't change their controls (which many expect, and which
+matters for accessibility).
+
+**Input actions** fix this. The game names what the player *does* ("left", "burst") and
+lists which inputs trigger each one, once. Everything else asks about the name:
+
+| Before | After |
+|---|---|
+| `in.keyPressed(SDL_SCANCODE_SPACE) \|\| in.gamepadPressed(SDL_GAMEPAD_BUTTON_SOUTH)` | `actions.pressed("burst")` |
+| eight `keyDown`/`gamepadDown` lines plus the stick | `actions.vector("left", "right", "up", "down")` |
+| `"Space / (A): burst"` typed into the help text | `actions.prompt("burst")` → `"Space"` or `"A"` |
+
+`app.actions()` (`core/Actions.h`) is updated by the framework every frame, right after
+input, so it is ready in `onUpdate`. A **binding** is one physical input:
+`Binding::key(...)`, `Binding::mouse(...)`, `Binding::button(...)` for a gamepad button,
+or `Binding::axis(axis, -1 or +1)` for one direction of a stick, or a trigger.
+
+In **`MyGame.h`**, at the end of the members:
+
+```cpp
+    // Rebinding in the debug UI: the action waiting for a new input ("" = none), and
+    // a line about the last change.
+    std::string rebinding_;
+    std::string rebindNote_;
+```
+
+In **`MyGame.cpp`**, add `#include <optional>` with the other includes. Then define the
+actions at the end of `onInit`:
+
+```cpp
+    // Input actions: the game asks about "left" or "burst", never about a key or button.
+    // These are the default bindings; the player can change them (see the debug UI).
+    using core::Binding;
+    core::Actions& actions = app.actions();
+    actions.define("left", {Binding::key(SDL_SCANCODE_A), Binding::key(SDL_SCANCODE_LEFT),
+                            Binding::axis(SDL_GAMEPAD_AXIS_LEFTX, -1), Binding::button(SDL_GAMEPAD_BUTTON_DPAD_LEFT)});
+    actions.define("right", {Binding::key(SDL_SCANCODE_D), Binding::key(SDL_SCANCODE_RIGHT),
+                             Binding::axis(SDL_GAMEPAD_AXIS_LEFTX, +1), Binding::button(SDL_GAMEPAD_BUTTON_DPAD_RIGHT)});
+    actions.define("up", {Binding::key(SDL_SCANCODE_W), Binding::key(SDL_SCANCODE_UP),
+                          Binding::axis(SDL_GAMEPAD_AXIS_LEFTY, -1), Binding::button(SDL_GAMEPAD_BUTTON_DPAD_UP)});
+    actions.define("down", {Binding::key(SDL_SCANCODE_S), Binding::key(SDL_SCANCODE_DOWN),
+                            Binding::axis(SDL_GAMEPAD_AXIS_LEFTY, +1), Binding::button(SDL_GAMEPAD_BUTTON_DPAD_DOWN)});
+    actions.define("burst", {Binding::key(SDL_SCANCODE_SPACE), Binding::button(SDL_GAMEPAD_BUTTON_SOUTH)});
+    actions.define("zoom in", {Binding::key(SDL_SCANCODE_EQUALS), Binding::button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)});
+    actions.define("zoom out", {Binding::key(SDL_SCANCODE_MINUS), Binding::button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)});
+    actions.define("mute", {Binding::key(SDL_SCANCODE_M)});
+    actions.define("vsync", {Binding::key(SDL_SCANCODE_V)});
+    actions.define("help", {Binding::key(SDL_SCANCODE_H)});
+    actions.define("quit", {Binding::key(SDL_SCANCODE_ESCAPE), Binding::button(SDL_GAMEPAD_BUTTON_BACK)});
+```
+
+In `onUpdate`, replace everything from `core::Input& in = app.input();` down to the mute
+key with:
+
+```cpp
+    const core::Input& in = app.input();
+    core::Actions& actions = app.actions();
+
+    // Waiting for a new input for an action (the "+" buttons in the debug UI)? The
+    // next key, click, button or stick push is it; the game ignores it meanwhile.
+    if (!rebinding_.empty()) {
+        if (const std::optional<core::Binding> input = actions.capture()) {
+            if (*input == core::Binding::key(SDL_SCANCODE_ESCAPE)) {
+                rebindNote_ = "Cancelled.";
+            } else {
+                const std::vector<std::string> users = actions.actionsUsing(*input);
+                rebindNote_ = actions.displayName(*input) + " added to \"" + rebinding_ + "\".";
+                for (const std::string& other : users)
+                    if (other != rebinding_)
+                        rebindNote_ += " (Also used by \"" + other + "\".)"; // allowed, but worth knowing
+                actions.addBinding(rebinding_, *input);
+            }
+            rebinding_.clear();
+        }
+        moveInput_ = glm::vec2(0.0f);
+        return;
+    }
+
+    if (actions.pressed("quit"))
+        app.quit();
+    if (actions.pressed("vsync"))
+        app.renderer().setVsync(!app.renderer().vsync());
+    if (actions.pressed("help"))
+        showHelp_ = !showHelp_;
+    if (actions.pressed("mute"))
+        app.audio().setMuted(!app.audio().muted());
+```
+
+Replace the movement code (`glm::vec2 move(0.0f);` down to `moveInput_ = move;`):
+
+```cpp
+    // --- Movement: four actions make one direction (analog with a stick) ---
+    moveInput_ = actions.vector("left", "right", "up", "down");
+```
+
+In the burst code, change the `if` line to `if (actions.pressed("burst")) {`. In the zoom
+code, replace the five `zoomDelta` lines with:
+
+```cpp
+    // (The wheel isn't an action: it has no "held" state, just an amount per frame.)
+    const float zoomDelta = in.mouseWheel() * 0.1f + (actions.value("zoom in") - actions.value("zoom out")) * 1.5f * dt;
+```
+
+The help panel builds its text from the bindings. Add these two functions inside the
+`namespace { }` near the top of the file:
+
+```cpp
+// "W/A/S/D", or "Left Stick Up/Left/Down/Right": the four movement prompts, with
+// shared leading words said once.
+std::string movePrompt(const core::Actions& actions)
+{
+    const std::string names[4] = {actions.prompt("up"), actions.prompt("left"), actions.prompt("down"),
+                                  actions.prompt("right")};
+    size_t common = 0; // length of the shared whole words at the start
+    for (size_t i = 0; i < names[0].size(); ++i) {
+        bool same = true;
+        for (const std::string& n : names)
+            same = same && i < n.size() && n[i] == names[0][i];
+        if (!same)
+            break;
+        if (names[0][i] == ' ')
+            common = i + 1;
+    }
+    std::string text = names[0];
+    for (int i = 1; i < 4; ++i)
+        text += "/" + names[i].substr(common);
+    return text;
+}
+
+// The help panel's text, built from the bindings: it shows the keys or buttons of
+// the device used last, and stays right after rebinding.
+std::string helpText(const core::Actions& actions)
+{
+    const bool pad = actions.lastDevice() == core::InputDevice::Gamepad;
+    return movePrompt(actions) + ": move      " + actions.prompt("burst") + ": burst      " +
+           (pad ? "" : "Wheel, ") + actions.prompt("zoom in") + "/" + actions.prompt("zoom out") + ": zoom\n" +
+           actions.prompt("mute") + ": mute      " + actions.prompt("vsync") + ": vsync      " +
+           actions.prompt("help") + ": hide help      ` (below Esc): debug UI";
+}
+```
+
+In `onRender`, replace the `const char* help = ...;` lines with:
+
+```cpp
+        const std::string help = helpText(app.actions());
+```
+
+and change the HUD's device line to show the device used *last*, rather than whether a
+pad is plugged in:
+
+```cpp
+    const bool pad = app.actions().lastDevice() == core::InputDevice::Gamepad; // the one used last
+```
+
+Finally, a rebinding window. In `onDebugUI`, replace the final `ImGui::End();` (after the
+Textures section) with:
+
+```cpp
+    ImGui::End();
+
+    // Rebinding, in a window of its own: every action with its bindings. Click a
+    // binding to remove it; "+" waits for the next input (onUpdate catches it).
+    ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, 12.0f * scale), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver); // starts closed: click the title
+    if (ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        core::Actions& actions = app.actions();
+        for (const std::string& name : actions.names()) {
+            ImGui::PushID(name.c_str());
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(name.c_str());
+            ImGui::SameLine(80.0f * scale);
+            const std::vector<core::Binding> bindings = actions.bindings(name); // a copy: removing changes it
+            for (size_t i = 0; i < bindings.size(); ++i) {
+                ImGui::PushID(int(i));
+                if (ImGui::SmallButton(actions.displayName(bindings[i]).c_str()))
+                    actions.removeBinding(name, bindings[i]);
+                ImGui::SetItemTooltip("Click to remove");
+                ImGui::PopID();
+                ImGui::SameLine();
+            }
+            if (rebinding_ == name) {
+                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "press a key or button (Esc cancels)");
+            } else if (ImGui::SmallButton("+")) {
+                rebinding_ = name;
+                rebindNote_.clear();
+            }
+            ImGui::PopID();
+        }
+        if (!rebindNote_.empty())
+            ImGui::TextUnformatted(rebindNote_.c_str());
+        if (ImGui::Button("Reset all to defaults")) {
+            actions.resetAllToDefaults();
+            rebinding_.clear();
+            rebindNote_.clear();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Copy as JSON")) // the text a settings file would save
+            ImGui::SetClipboardText(actions.saveBindings().c_str());
+        ImGui::Text("Last used: %s",
+                    actions.lastDevice() == core::InputDevice::Gamepad ? "gamepad" : "keyboard & mouse");
+    }
+    ImGui::End();
+```
+
+Things to notice:
+
+- **Movement is one line.** `vector()` combines four actions into a direction: diagonals
+  aren't faster, and a half-tilted stick walks at half speed, as before.
+- **`pressed` never misses a tap.** A key pressed and released between two frames still
+  counts as one press.
+- **Prompts follow the player.** Press a gamepad button and the help panel switches to
+  "A: burst"; touch the keyboard and it switches back. The button names match the pad:
+  A/B/X/Y on Xbox pads and the Steam Deck, Cross/Circle/Square/Triangle on PlayStation.
+- **Rebinding is a few calls.** `capture()` returns the first input pressed this frame,
+  `addBinding`/`removeBinding` change an action, `resetAllToDefaults` undoes everything,
+  and `actionsUsing` finds clashes. Two actions *may* share an input (Space could burst and
+  confirm a menu), so the demo only mentions it.
+- **While waiting for a new input, the game ignores its controls**, so the key you press
+  doesn't also do its old job. **Esc** cancels.
+- **Saving.** "Copy as JSON" puts `saveBindings()` on the clipboard:
+  `{"burst": ["key:Space", "pad:a"], ...}`. A settings file can store that text and pass it to
+  `loadBindings` at start-up. (Settings files are a later feature of the framework.)
+- **Fixed-step games: use `consume`.** `pressed` is true for one *frame*, but
+  `onFixedUpdate` can run zero or several times per frame. For a punch or jump read in
+  `onFixedUpdate`, use `actions.consume("punch")`: the press is kept for a moment (0.15 s
+  by default) until a step uses it, so it's never lost or used twice. This demo reads its
+  buttons in `onUpdate`, so it doesn't need it.
+- **The raw input is still there.** `app.input()` is still the right tool for things that
+  aren't really actions: the mouse wheel, the cursor position, or a level editor's
+  hot keys.
+
+**Run it:** everything plays as before. Plug in a gamepad (or press a button on it) and
+the help panel shows its buttons. Open the debug UI (**`**) and click the **Controls**
+title at the top: click **+** next to "burst" and press **J**. Now **J** bursts too.
+Click a binding to remove it, and **Reset all to defaults** to start again.
+
 **That's the complete demo.** Your `MyGame` now behaves exactly like `DemoGame`. You can
 delete `DemoGame.h/.cpp` from your own projects once you no longer need them for reference.
 
@@ -1510,8 +1754,8 @@ delete `DemoGame.h/.cpp` from your own projects once you no longer need them for
 
 Ideas, roughly in order of difficulty, each building on what you've used here:
 
-1. **Sprite-sheet animation.** Put several frames in one PNG and pick one with
-   `UvRect::fromPixels(texture, frame * 32, 0, 32, 32)`, advancing `frame` on a timer.
+1. **More animation.** Draw your own character in Aseprite with idle, walk and attack
+   tags, and play the attack clip from a `consume("attack")` in `onFixedUpdate`.
 2. **Enemies.** A `std::vector<Enemy>` updated in `onFixedUpdate`, exactly like particles,
    chasing the player with `glm::normalize(player - enemy)`.
 3. **Tilemaps from a file.** Load a map made in the Tiled editor (`.tmj` is JSON) and draw

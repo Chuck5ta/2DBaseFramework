@@ -81,4 +81,9 @@ private:
     render2d::SpriteSheet coinSheet_;
     render2d::Animator playerAnim_;
     bool bursting_ = false; // the "burst" clip is playing; don't switch to idle/hop yet
+
+    // Rebinding in the debug UI: the action waiting for a new input ("" = none), and
+    // a line about the last change.
+    std::string rebinding_;
+    std::string rebindNote_;
 };

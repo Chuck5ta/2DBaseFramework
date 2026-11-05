@@ -147,6 +147,7 @@ int Application::run(Game& game)
         const double dt = std::min(double(now - last) / frequency, 0.25);
         last = now;
         time_ += dt;
+        actions_.update(*input_, time_); // named actions from this frame's input
 
         // --- Simulation ---
         accumulator += dt;

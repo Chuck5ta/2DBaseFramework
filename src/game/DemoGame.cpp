@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <string>
 
 using namespace render2d;
@@ -76,6 +77,39 @@ gfx::Texture makeOrbTexture(gfx::VulkanContext& gpu)
     return gfx::Texture::fromPixels(gpu, N, N, px.data(), desc);
 }
 
+// "W/A/S/D", or "Left Stick Up/Left/Down/Right": the four movement prompts, with
+// shared leading words said once.
+std::string movePrompt(const core::Actions& actions)
+{
+    const std::string names[4] = {actions.prompt("up"), actions.prompt("left"), actions.prompt("down"),
+                                  actions.prompt("right")};
+    size_t common = 0; // length of the shared whole words at the start
+    for (size_t i = 0; i < names[0].size(); ++i) {
+        bool same = true;
+        for (const std::string& n : names)
+            same = same && i < n.size() && n[i] == names[0][i];
+        if (!same)
+            break;
+        if (names[0][i] == ' ')
+            common = i + 1;
+    }
+    std::string text = names[0];
+    for (int i = 1; i < 4; ++i)
+        text += "/" + names[i].substr(common);
+    return text;
+}
+
+// The help panel's text, built from the bindings: it shows the keys or buttons of
+// the device used last, and stays right after rebinding.
+std::string helpText(const core::Actions& actions)
+{
+    const bool pad = actions.lastDevice() == core::InputDevice::Gamepad;
+    return movePrompt(actions) + ": move      " + actions.prompt("burst") + ": burst      " +
+           (pad ? "" : "Wheel, ") + actions.prompt("zoom in") + "/" + actions.prompt("zoom out") + ": zoom\n" +
+           actions.prompt("mute") + ": mute      " + actions.prompt("vsync") + ": vsync      " +
+           actions.prompt("help") + ": hide help      ` (below Esc): debug UI";
+}
+
 } // namespace
 
 void DemoGame::onInit(core::Application& app)
@@ -113,6 +147,26 @@ void DemoGame::onInit(core::Application& app)
 
     for (int i = 0; i < kCoinCount; ++i)
         coins_.push_back({randomWorldPoint(), float(i)});
+
+    // Input actions: the game asks about "left" or "burst", never about a key or button.
+    // These are the default bindings; the player can change them (see the debug UI).
+    using core::Binding;
+    core::Actions& actions = app.actions();
+    actions.define("left", {Binding::key(SDL_SCANCODE_A), Binding::key(SDL_SCANCODE_LEFT),
+                            Binding::axis(SDL_GAMEPAD_AXIS_LEFTX, -1), Binding::button(SDL_GAMEPAD_BUTTON_DPAD_LEFT)});
+    actions.define("right", {Binding::key(SDL_SCANCODE_D), Binding::key(SDL_SCANCODE_RIGHT),
+                             Binding::axis(SDL_GAMEPAD_AXIS_LEFTX, +1), Binding::button(SDL_GAMEPAD_BUTTON_DPAD_RIGHT)});
+    actions.define("up", {Binding::key(SDL_SCANCODE_W), Binding::key(SDL_SCANCODE_UP),
+                          Binding::axis(SDL_GAMEPAD_AXIS_LEFTY, -1), Binding::button(SDL_GAMEPAD_BUTTON_DPAD_UP)});
+    actions.define("down", {Binding::key(SDL_SCANCODE_S), Binding::key(SDL_SCANCODE_DOWN),
+                            Binding::axis(SDL_GAMEPAD_AXIS_LEFTY, +1), Binding::button(SDL_GAMEPAD_BUTTON_DPAD_DOWN)});
+    actions.define("burst", {Binding::key(SDL_SCANCODE_SPACE), Binding::button(SDL_GAMEPAD_BUTTON_SOUTH)});
+    actions.define("zoom in", {Binding::key(SDL_SCANCODE_EQUALS), Binding::button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)});
+    actions.define("zoom out", {Binding::key(SDL_SCANCODE_MINUS), Binding::button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)});
+    actions.define("mute", {Binding::key(SDL_SCANCODE_M)});
+    actions.define("vsync", {Binding::key(SDL_SCANCODE_V)});
+    actions.define("help", {Binding::key(SDL_SCANCODE_H)});
+    actions.define("quit", {Binding::key(SDL_SCANCODE_ESCAPE), Binding::button(SDL_GAMEPAD_BUTTON_BACK)});
 }
 
 void DemoGame::onShutdown(core::Application&)
@@ -212,35 +266,42 @@ void DemoGame::onFixedUpdate(core::Application& app, float dt)
 
 void DemoGame::onUpdate(core::Application& app, float dt)
 {
-    core::Input& in = app.input();
+    const core::Input& in = app.input();
+    core::Actions& actions = app.actions();
 
-    if (in.keyPressed(SDL_SCANCODE_ESCAPE) || in.gamepadPressed(SDL_GAMEPAD_BUTTON_BACK))
+    // Waiting for a new input for an action (the "+" buttons in the debug UI)? The
+    // next key, click, button or stick push is it; the game ignores it meanwhile.
+    if (!rebinding_.empty()) {
+        if (const std::optional<core::Binding> input = actions.capture()) {
+            if (*input == core::Binding::key(SDL_SCANCODE_ESCAPE)) {
+                rebindNote_ = "Cancelled.";
+            } else {
+                const std::vector<std::string> users = actions.actionsUsing(*input);
+                rebindNote_ = actions.displayName(*input) + " added to \"" + rebinding_ + "\".";
+                for (const std::string& other : users)
+                    if (other != rebinding_)
+                        rebindNote_ += " (Also used by \"" + other + "\".)"; // allowed, but worth knowing
+                actions.addBinding(rebinding_, *input);
+            }
+            rebinding_.clear();
+        }
+        moveInput_ = glm::vec2(0.0f);
+        return;
+    }
+
+    if (actions.pressed("quit"))
         app.quit();
-    if (in.keyPressed(SDL_SCANCODE_V))
+    if (actions.pressed("vsync"))
         app.renderer().setVsync(!app.renderer().vsync());
-    if (in.keyPressed(SDL_SCANCODE_H))
+    if (actions.pressed("help"))
         showHelp_ = !showHelp_;
-    if (in.keyPressed(SDL_SCANCODE_M))
+    if (actions.pressed("mute"))
         app.audio().setMuted(!app.audio().muted());
 
-    // --- Movement input: read every frame, used by the next fixed step ---
-    glm::vec2 move(0.0f);
-    if (in.keyDown(SDL_SCANCODE_A) || in.keyDown(SDL_SCANCODE_LEFT))  move.x -= 1.0f;
-    if (in.keyDown(SDL_SCANCODE_D) || in.keyDown(SDL_SCANCODE_RIGHT)) move.x += 1.0f;
-    if (in.keyDown(SDL_SCANCODE_W) || in.keyDown(SDL_SCANCODE_UP))    move.y -= 1.0f; // +Y is down
-    if (in.keyDown(SDL_SCANCODE_S) || in.keyDown(SDL_SCANCODE_DOWN))  move.y += 1.0f;
-    if (in.gamepadDown(SDL_GAMEPAD_BUTTON_DPAD_LEFT))  move.x -= 1.0f;
-    if (in.gamepadDown(SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) move.x += 1.0f;
-    if (in.gamepadDown(SDL_GAMEPAD_BUTTON_DPAD_UP))    move.y -= 1.0f;
-    if (in.gamepadDown(SDL_GAMEPAD_BUTTON_DPAD_DOWN))  move.y += 1.0f;
-    if (glm::length(move) > 1.0f)
-        move = glm::normalize(move); // diagonals aren't faster
-    const glm::vec2 stick = in.leftStick();
-    if (glm::length(stick) > glm::length(move))
-        move = stick; // analogue: a partial tilt walks slower
-    moveInput_ = move;
+    // --- Movement: four actions make one direction (analog with a stick) ---
+    moveInput_ = actions.vector("left", "right", "up", "down");
 
-    if (in.keyPressed(SDL_SCANCODE_SPACE) || in.gamepadPressed(SDL_GAMEPAD_BUTTON_SOUTH)) {
+    if (actions.pressed("burst")) {
         spawnBurst(playerPos_, 60, colors::Blue);
         app.audio().play(whooshSound_, {.volume = 0.8f});
         playerAnim_.play(slimeSheet_, "burst", true); // restart, even if already bursting
@@ -248,11 +309,8 @@ void DemoGame::onUpdate(core::Application& app, float dt)
     }
 
     // --- Zoom: mouse wheel, +/- keys, gamepad bumpers ---
-    float zoomDelta = in.mouseWheel() * 0.1f;
-    if (in.gamepadDown(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) zoomDelta += 1.5f * dt;
-    if (in.gamepadDown(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER))  zoomDelta -= 1.5f * dt;
-    if (in.keyDown(SDL_SCANCODE_EQUALS)) zoomDelta += 1.5f * dt;
-    if (in.keyDown(SDL_SCANCODE_MINUS))  zoomDelta -= 1.5f * dt;
+    // (The wheel isn't an action: it has no "held" state, just an amount per frame.)
+    const float zoomDelta = in.mouseWheel() * 0.1f + (actions.value("zoom in") - actions.value("zoom out")) * 1.5f * dt;
     camera_.zoom = std::clamp(camera_.zoom * std::exp(zoomDelta), 0.25f, 4.0f);
 
     // --- Camera smoothly follows the (interpolated) player ---
@@ -335,6 +393,49 @@ void DemoGame::onDebugUI(core::Application& app)
         ImGui::Image(ui.texture(coinSheet_.texture()), ImVec2(128.0f * scale, 16.0f * scale));
         ImGui::Text("Font atlas (%u x %u):", font_.texture().width(), font_.texture().height());
         ImGui::Image(ui.texture(font_.texture()), ImVec2(256.0f * scale, 256.0f * scale));
+    }
+    ImGui::End();
+
+    // Rebinding, in a window of its own: every action with its bindings. Click a
+    // binding to remove it; "+" waits for the next input (onUpdate catches it).
+    ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, 12.0f * scale), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver); // starts closed: click the title
+    if (ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        core::Actions& actions = app.actions();
+        for (const std::string& name : actions.names()) {
+            ImGui::PushID(name.c_str());
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(name.c_str());
+            ImGui::SameLine(80.0f * scale);
+            const std::vector<core::Binding> bindings = actions.bindings(name); // a copy: removing changes it
+            for (size_t i = 0; i < bindings.size(); ++i) {
+                ImGui::PushID(int(i));
+                if (ImGui::SmallButton(actions.displayName(bindings[i]).c_str()))
+                    actions.removeBinding(name, bindings[i]);
+                ImGui::SetItemTooltip("Click to remove");
+                ImGui::PopID();
+                ImGui::SameLine();
+            }
+            if (rebinding_ == name) {
+                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "press a key or button (Esc cancels)");
+            } else if (ImGui::SmallButton("+")) {
+                rebinding_ = name;
+                rebindNote_.clear();
+            }
+            ImGui::PopID();
+        }
+        if (!rebindNote_.empty())
+            ImGui::TextUnformatted(rebindNote_.c_str());
+        if (ImGui::Button("Reset all to defaults")) {
+            actions.resetAllToDefaults();
+            rebinding_.clear();
+            rebindNote_.clear();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Copy as JSON")) // the text a settings file would save
+            ImGui::SetClipboardText(actions.saveBindings().c_str());
+        ImGui::Text("Last used: %s",
+                    actions.lastDevice() == core::InputDevice::Gamepad ? "gamepad" : "keyboard & mouse");
     }
     ImGui::End();
 }
@@ -460,7 +561,7 @@ void DemoGame::onRender(core::Application& app, gfx::FrameContext& frame)
     char fps[32];
     std::snprintf(fps, sizeof(fps), "%.0f fps", double(app.fps()));
     batch_->drawText(font_, fps, {viewport.x - 16.0f * ui, 12.0f * ui}, info);
-    const bool pad = app.input().hasGamepad();
+    const bool pad = app.actions().lastDevice() == core::InputDevice::Gamepad; // the one used last
     info.color = pad ? colors::Green : Color(1.0f, 1.0f, 1.0f, 0.5f);
     batch_->drawText(font_, pad ? "Gamepad" : "Keyboard & mouse", {viewport.x - 16.0f * ui, 34.0f * ui}, info);
     if (app.audio().muted()) {
@@ -470,8 +571,7 @@ void DemoGame::onRender(core::Application& app, gfx::FrameContext& frame)
 
     // Bottom: a help panel, sized to fit its text.
     if (showHelp_) {
-        const char* help = "WASD / left stick: move      Space / (A): burst      Wheel / bumpers: zoom\n"
-                           "M: mute      V: vsync      H: hide help      ` (below Esc): debug UI";
+        const std::string help = helpText(app.actions());
         TextStyle style = hud;
         style.size = 16.0f * ui;
         style.align = TextAlign::Center;

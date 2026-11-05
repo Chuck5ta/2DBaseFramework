@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio/Audio.h"
+#include "core/Actions.h"
 #include "core/Input.h"
 #include "debugui/DebugUI.h"
 #include "core/Window.h"
@@ -77,6 +78,7 @@ public:
 
     Window& window()            { return *window_; }
     Input& input()              { return *input_; }
+    Actions& actions()          { return actions_; } // named actions with rebindable inputs
     gfx::VulkanContext& gpu()   { return *context_; }
     gfx::Renderer& renderer()   { return *renderer_; }
     audio::AudioEngine& audio() { return *audio_; }
@@ -103,6 +105,7 @@ private:
 
     bool running_ = false;
     double time_ = 0.0;
+    Actions actions_;
     float fps_ = 0.0f;
     float alpha_ = 0.0f;
 
