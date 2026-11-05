@@ -7,6 +7,7 @@
 #include "core/Application.h"
 #include "render2d/Camera2D.h"
 #include "render2d/SpriteBatch.h"
+#include "render2d/Animation.h"
 
 #include <memory>
 #include <random>
@@ -74,4 +75,10 @@ private:
     // Which sound zone the player is in (effects change when this changes).
     bool inCave_ = false;
     bool inPond_ = false;
+
+    // Animation: the player's clips come from an Aseprite export; the coins are a grid.
+    render2d::SpriteSheet slimeSheet_;
+    render2d::SpriteSheet coinSheet_;
+    render2d::Animator playerAnim_;
+    bool bursting_ = false; // the "burst" clip is playing; don't switch to idle/hop yet
 };

@@ -68,9 +68,16 @@ FetchContent_Declare(imgui
     GIT_SHALLOW    TRUE
     SOURCE_SUBDIR  _download_only)
 
-FetchContent_MakeAvailable(SDL3 vulkan_headers volk vma glm stb miniaudio imgui)
+# nlohmann/json: reading and writing JSON (Aseprite sprite sheets, settings, saves).
+FetchContent_Declare(json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.12.0
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  _download_only)
 
-# --- One target that carries Vulkan headers, volk, VMA, GLM, stb, miniaudio ---
+FetchContent_MakeAvailable(SDL3 vulkan_headers volk vma glm stb miniaudio imgui json)
+
+# --- One target that carries Vulkan headers, volk, VMA, GLM, stb, miniaudio, json ---
 add_library(third_party STATIC ${volk_SOURCE_DIR}/volk.c)
 target_include_directories(third_party SYSTEM PUBLIC
     ${vulkan_headers_SOURCE_DIR}/include
@@ -78,7 +85,8 @@ target_include_directories(third_party SYSTEM PUBLIC
     ${vma_SOURCE_DIR}/include
     ${glm_SOURCE_DIR}
     ${stb_SOURCE_DIR}
-    ${miniaudio_SOURCE_DIR})
+    ${miniaudio_SOURCE_DIR}
+    ${json_SOURCE_DIR}/single_include)
 target_compile_definitions(third_party PUBLIC
     VK_NO_PROTOTYPES                 # all Vulkan calls go through volk
     GLM_FORCE_DEPTH_ZERO_TO_ONE      # Vulkan clip space depth is [0, 1]

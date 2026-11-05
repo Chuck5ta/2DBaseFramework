@@ -6,7 +6,7 @@ every step you can build and run the game and see the result.
 
 **What you'll learn:** the `Game` hooks, drawing sprites, loading textures, keyboard and
 gamepad input, the fixed timestep with interpolation, cameras, culling, simple particles,
-a HUD, text, sound, audio effects and a debug UI.
+sprite animation, a HUD, text, sound, audio effects and a debug UI.
 
 **Before you start:** the project builds and runs (see [BUILDING.md](BUILDING.md)). For
 background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -24,6 +24,7 @@ background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
 | [9](#step-9--sound) | Sound effects with `app.audio()` | A chime per coin, a whoosh per burst; **M** mutes |
 | [10](#step-10--a-debug-ui) | A Dear ImGui window with `onDebugUI` | Live stats, sliders, buttons and debug drawing |
 | [11](#step-11--sound-zones-reverb-and-muffling) | Audio effects: reverb and a low-pass filter | A cave that echoes and a pond that muffles |
+| [12](#step-12--sprite-animation) | Sprite sheets, clips and an Animator | A hopping slime with dust on landing; spinning coins |
 
 > Every code listing in this tutorial was compiled (with warnings as errors) and run with
 > Vulkan validation enabled, step by step. If something doesn't work, compare with
@@ -1355,6 +1356,150 @@ Things to notice:
 **Run it:** walk left into the dark **CAVE** and press **Space**: the whoosh rings on in
 the cave. Collect a coin there and the chime rings on too. Walk right into the **POND**: the
 same sounds become dull and muffled, and they're clear again as soon as you step out.
+
+---
+
+## Step 12 — Sprite animation
+
+Until now the slime has been one picture squashed in code, and the coins a tinted circle.
+This step gives them real animation: a sequence of drawings (**frames**) in one image (a
+**sprite sheet**), grouped into named **clips** such as "idle" or "hop".
+
+The framework's `render2d/Animation.h` has three pieces:
+
+| Piece | Job |
+|---|---|
+| **`SpriteSheet`** | The texture, where each frame is in it, and the named clips |
+| **`AnimationClip`** | A list of frames with their durations, how it repeats (`Loop`, `Once`, `PingPong`) and optional named **events** |
+| **`Animator`** | Plays one clip for one object: call `play`, `update`, then draw with `uv()` |
+
+A sheet can be made in two ways:
+
+- **From [Aseprite](https://www.aseprite.org/)**, the most popular pixel-art editor. *File →
+  Export Sprite Sheet* with *JSON Data* writes a PNG and a JSON file. `loadAseprite` reads
+  both: each **tag** becomes a clip, and each frame keeps the duration you gave it. A tag
+  set to *Ping-pong* ping-pongs, *Reverse* plays backwards, and *Repeat 1* plays once.
+- **From a plain grid** of equal frames (`loadGrid`), adding clips in code.
+
+The project ships both kinds in `assets/sprites/` (CC0, see the README there):
+`slime.png` + `slime.json` (Aseprite format, tags **idle**, **hop** and **burst**) and
+`coin.png` (8 frames of 16×16 in a row).
+
+In **`MyGame.h`**, add `#include "render2d/Animation.h"` with the other includes, and at the
+end of the members:
+
+```cpp
+    // Animation: the player's clips come from an Aseprite export; the coins are a grid.
+    render2d::SpriteSheet slimeSheet_;
+    render2d::SpriteSheet coinSheet_;
+    render2d::Animator playerAnim_;
+    bool bursting_ = false; // the "burst" clip is playing; don't switch to idle/hop yet
+```
+
+In **`MyGame.cpp`**, load the sheets in `onInit`, right after the player texture:
+
+```cpp
+    // Animated sprites. The slime sheet is an Aseprite export: its tags (idle, hop,
+    // burst) become clips. The coin is a plain row of 16x16 frames.
+    slimeSheet_ = SpriteSheet::loadAseprite(gpu, core::assetPath("sprites/slime.json"));
+    slimeSheet_.clip("hop")->addEvent(5, "land"); // frame 5: the slime hits the ground
+    coinSheet_ = SpriteSheet::loadGrid(gpu, core::assetPath("sprites/coin.png"), {16, 16});
+    playerAnim_.play(slimeSheet_, "idle");
+```
+
+At the end of `onFixedUpdate`, choose the player's clip and advance it:
+
+```cpp
+    // --- Animation: pick the clip from what the player is doing, then advance it ---
+    if (bursting_ && playerAnim_.finished())
+        bursting_ = false; // the burst is over: back to idle or hopping
+    if (!bursting_)
+        playerAnim_.play(slimeSheet_, glm::length(playerVel_) > 30.0f ? "hop" : "idle");
+    playerAnim_.update(dt);
+
+    // A puff of dust each time the slime lands (the "land" event on the hop clip).
+    if (playerAnim_.eventFired("land")) {
+        std::uniform_real_distribution<float> spread(-1.0f, 1.0f);
+        for (int i = 0; i < 6; ++i) {
+            const glm::vec2 velocity(spread(rng_) * 40.0f, -10.0f - std::abs(spread(rng_)) * 15.0f);
+            particles_.push_back({playerPos_ + glm::vec2(spread(rng_) * 8.0f, 5.0f), velocity, 0.35f, 0.35f,
+                                  Color(0.85f, 0.8f, 0.7f, 0.8f)});
+        }
+    }
+```
+
+In `onUpdate`, **Space** now also plays the burst clip. Replace the burst code:
+
+```cpp
+    if (in.keyPressed(SDL_SCANCODE_SPACE) || in.gamepadPressed(SDL_GAMEPAD_BUTTON_SOUTH)) {
+        spawnBurst(playerPos_, 60, colors::Blue);
+        app.audio().play(whooshSound_, {.volume = 0.8f});
+        playerAnim_.play(slimeSheet_, "burst", true); // restart, even if already bursting
+        bursting_ = true;
+    }
+```
+
+In `onRender`, the player's sprite uses the current frame. Replace everything from
+`player.uv = ...` down to `batch_->draw(playerTexture_, player);` (the squash and stretch
+done in code isn't needed any more) with:
+
+```cpp
+    // The current frame of the player's animation (the art faces right).
+    player.uv = playerAnim_.uv(facingLeft_);
+    batch_->draw(slimeSheet_.texture(), player);
+```
+
+Replace the coin loop with spinning coins:
+
+```cpp
+    // --- Coins: bob up and down and spin ---
+    // Lots of identical looping objects don't need an Animator each: pick the frame
+    // from the time (offset per coin, so they don't all spin in step).
+    for (const Coin& c : coins_) {
+        const int coinFrame = int(t * 12.0f + c.phase * 2.0f) % coinSheet_.frameCount();
+        Sprite s;
+        s.position = c.position + glm::vec2(0.0f, std::sin(t * 3.0f + c.phase) * 3.0f);
+        s.size = glm::vec2(16.0f);
+        s.uv = coinSheet_.frame(coinFrame).uv;
+        batch_->draw(coinSheet_.texture(), s);
+    }
+```
+
+And in `onDebugUI`, after the sound-zone buttons:
+
+```cpp
+    ImGui::Text("Animation: %s, frame %d", playerAnim_.clipName().c_str(), playerAnim_.frame());
+    ImGui::SliderFloat("Animation speed", &playerAnim_.speed, 0.0f, 3.0f, "%.2fx");
+```
+
+Things to notice:
+
+- **`play()` every step is fine.** Asking for the clip that's already playing does nothing,
+  so the code simply says what *should* be playing ("hop" while moving, "idle" otherwise).
+  Pass `true` as the third argument to restart a clip, as the burst does.
+- **Once clips and `finished()`.** The burst is a *Repeat 1* tag, so it plays once and holds
+  its last frame. `finished()` tells the game when to hand back to idle or hop.
+- **Events tie gameplay to the art.** `addEvent(5, "land")` names the frame where the slime
+  touches the ground, and `eventFired("land")` is true on the step that frame starts. The
+  same idea will say "the punch connects now" in a fighting game. If a long step skips
+  frames, their events still fire.
+- **Update animation in `onFixedUpdate`** when it drives gameplay (events, hit frames), so
+  it runs at the same rate as the simulation. Each frame changes on exactly the right tick.
+  Purely decorative animation can be updated in `onUpdate` instead.
+- **Facing left.** Draw the art facing right; `uv(true)` mirrors it.
+- **Not everything needs an Animator.** Two dozen identical coins just pick a frame from the
+  clock (`coinSheet_.frame(i).uv`), offset per coin so they don't spin in step.
+- **Crisp frames.** Sheets load with `SpriteSheet::pixelArt()`: nearest filtering and no
+  mipmaps. Mipmaps would blend neighbouring frames together. For smooth (non-pixel) art,
+  pass a `TextureDesc` with linear filtering and leave a pixel or two of space between frames.
+- **Exporting from Aseprite:** *Sheet type* "By Rows" (or any), *JSON Data* ticked as
+  *Array* (Hash works too), *Tags* ticked, *Trim* **unticked** (trimmed frames would jump
+  around). Put the PNG next to the JSON in `assets/`.
+
+**Run it:** the slime breathes gently while standing still, hops when you move (with a
+puff of dust each time it lands), and puffs up happily when you press **Space**. The coins
+spin. In the debug UI, the Game window shows the clip and frame. Slow the animation down
+to see each frame, and open **Textures** to see both sheets.
 
 **That's the complete demo.** Your `MyGame` now behaves exactly like `DemoGame`. You can
 delete `DemoGame.h/.cpp` from your own projects once you no longer need them for reference.

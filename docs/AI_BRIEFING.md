@@ -7,7 +7,7 @@
 > (design and internals), `docs/TUTORIAL.md` (the demo built step by step) or
 > `docs/BUILDING.md` (Windows, Linux, Steam Deck builds).
 >
-> Framework state: **2026-11-03**. If the user's copy of the framework is older or newer,
+> Framework state: **2026-11-05**. If the user's copy of the framework is older or newer,
 > trust the source code over this file.
 
 ## 1. What it is
@@ -24,7 +24,7 @@ panels) shows how it fits together.
 - **Platforms:** Windows (Visual Studio 2022/2026), Linux, Steam Deck (SteamOS, Mesa RADV).
 - **Libraries:** SDL3 3.4.16 (window, input, gamepads), Vulkan 1.3 through volk, VMA 3.3.0
   (GPU memory), GLM 1.0.1 (maths), stb_image and stb_truetype (images, fonts), miniaudio
-  0.11.23 (audio), Dear ImGui 1.92.9 (debug UI).
+  0.11.23 (audio), Dear ImGui 1.92.9 (debug UI), nlohmann/json 3.12.0 (JSON).
 - **Shared code:** `core/`, `gfx/`, `audio/`, `debugui/` and `render2d/` are identical in
   Game2D and Game3D (this is Game2D; its sibling is Game3D). Game2D's `render2d` is the main renderer.
 
@@ -36,12 +36,12 @@ src/
   core/                 Application (loop, hooks), Window, Input, Paths, Log
   gfx/                  Vulkan: VulkanContext, Swapchain, Renderer, Buffer, Image,
                         Texture, Pipeline(Builder), Descriptors
-  render2d/             SpriteBatch, Camera2D, Font
+  render2d/             SpriteBatch, Camera2D, Font, Animation (SpriteSheet, Animator)
   audio/                AudioEngine (miniaudio): sounds, music, 3D, effects, Doppler
   debugui/              DebugUI (Dear ImGui)
   game/                 DemoGame (the example); your game goes here
 shaders/                sprite.vert/.frag, imgui.frag (GLSL, compiled at build time)
-assets/                 fonts/ (Roboto), sounds/, textures/ (copied next to the exe)
+assets/                 fonts/ (Roboto), sounds/, sprites/, textures/ (copied next to the exe)
 cmake/                  Dependencies.cmake, Shaders.cmake
 docs/                   ARCHITECTURE, BUILDING, TUTORIAL, AI_BRIEFING (this file)
 ```
@@ -303,6 +303,29 @@ ASCII + Latin-1; UTF-8 strings; characters not baked show as `?`). `measure(text
 (use with the HUD camera). `'\n'` starts a new line. The project ships Roboto Medium
 (Apache 2.0).
 
+**Animation** (`render2d/Animation.h`):
+- `render2d::SpriteSheet`: `SpriteSheet::loadAseprite(app.gpu(), core::assetPath("sprites/x.json"))`
+  reads Aseprite's *Export Sprite Sheet* JSON (Array or Hash; image next to it; export
+  **untrimmed**): each tag becomes a clip with its frames' durations; *Ping-pong* tags
+  ping-pong, *Reverse* play backwards, *Repeat 1* plays once; no tags = one "default" clip.
+  `SpriteSheet::loadGrid(gpu, path, {w, h}, count = 0)` splits an image into equal frames
+  (left to right, top to bottom); add clips with `addClip(name, first, count, fps, loop)` or
+  `addClip(AnimationClip)`. Default `TextureDesc` is `SpriteSheet::pixelArt()` (nearest, no
+  mipmaps, clamped: mipmaps would blend frames). `texture()`, `frameCount()`,
+  `frame(i).uv / .size / .duration`, `clip(name)` (nullptr + one warning if missing),
+  `clipNames()`. `clip("hop")->addEvent(5, "land")` names a frame.
+- `AnimationClip`: `frames` (sheet indices), `durations` (seconds), `loop`
+  (`AnimationLoop::Loop / Once / PingPong`), `events`, `length()`.
+- `render2d::Animator` (one per animated object; points at its sheet, so keep the sheet
+  alive and in place): `play(sheet, "clip", restart = false)` (no-op if already playing:
+  call it every step with the clip that *should* play), `update(dt)` (in `onFixedUpdate`
+  for gameplay timing; frames change on exactly the right tick), `uv(flipX)` for
+  `Sprite::uv` (draw art facing right), `frameSize()`, `frame()`, `clipName()`,
+  `isPlaying("clip")`, `finished()` (Once clips), `eventFired("land")` / `events()` (events of
+  frames entered during the last update, even skipped ones), `speed` (0 = paused), `stop()`.
+- Many identical looping objects don't need an Animator each: pick
+  `sheet.frame(int(time * fps + offset) % sheet.frameCount()).uv`.
+
 ## 8. Audio (`audio::AudioEngine`, `app.audio()`)
 
 miniaudio underneath. Never fatal: with no device (or `GAME_AUDIO=0`) every call is a
@@ -424,12 +447,13 @@ fadeInSeconds, fadeOutPreviousSeconds = 1})` (crossfades from the current track)
   feature is added, update `README.md`, `docs/ARCHITECTURE.md`, `docs/BUILDING.md` if
   relevant, the tutorial, **and this briefing**.
 
-## 12. Known limitations (as of 2026-11-03)
+## 12. Known limitations (as of 2026-11-05)
 
 - Text is baked at one size per `Font` (for big or zooming text, bake larger or move to MSDF).
 - No bindless textures: batches break on texture changes (use atlases).
-- No tilemap loader, animation system or particles system beyond what the demo shows:
-  sprite-sheet animation is `UvRect::fromPixels` + a timer; particles are a vector.
+- No tilemap loader or particle system beyond what the demo shows (particles are a vector).
+- Animation has no per-frame hitboxes yet (Aseprite slices aren't read) and no blending
+  between clips (pixel art doesn't need it).
 - One audio listener (no split-screen); one music track at a time; one shared reverb.
 - The debug UI draws inside the game window (no ImGui docking or separate OS windows) and
   doesn't save its layout.

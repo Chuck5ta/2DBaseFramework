@@ -9,6 +9,7 @@ a batched sprite renderer and audio, plus a playable demo showing how they fit t
 | Platform | Window, keyboard/mouse, gamepads (incl. Steam Deck controls), hi-DPI | SDL3 |
 | GPU | Instance/device setup, swapchain, frames in flight, buffers, textures, pipelines | Vulkan 1.3 via volk + VMA |
 | 2D | Sprite batching, orthographic camera, atlas UVs, rect/line helpers | your code |
+| Animation | Sprite sheets (grid or Aseprite JSON export), clips with per-frame timing, loop/once/ping-pong, frame events | nlohmann/json |
 | Text | TrueType fonts baked into an atlas, UTF-8, kerning, alignment, world or screen space | stb_truetype |
 | Audio | Sound effects (pitch, pan, volume), streamed music with crossfades, mixer, mute; effects: low-pass, high-pass, echo, reverb | miniaudio |
 | Debug UI | In-game tool windows (Debug builds): frame graph, GPU info, volumes, your own sliders and buttons | Dear ImGui |
@@ -116,11 +117,12 @@ src/
     SpriteBatch         batched quads, 1 draw call per texture run
     Camera2D            ortho camera, zoom/rotation, screen<->world
     Font                .ttf/.otf baked into a texture atlas; drawn with SpriteBatch::drawText
+    Animation           SpriteSheet (grid / Aseprite JSON), clips, Animator
   game/
     DemoGame            the example — replace with your game
 shaders/                GLSL; every *.vert/*.frag/*.comp is compiled automatically
 assets/                 copied next to the exe (fonts/: Roboto Medium, Apache 2.0;
-                        sounds/: demo effects, CC0)
+                        sounds/: demo effects, CC0; sprites/: animated sheets, CC0)
 cmake/                  dependency + shader build logic
 ```
 
@@ -185,6 +187,9 @@ Tips
 - Draw order = submission order. Group sprites by texture (or use an atlas) to keep
   draw calls low; `batch.stats()` shows sprites/draw calls.
 - Use `begin()/end()` twice per frame for world + HUD with different cameras.
+- Animation: `sheet_ = render2d::SpriteSheet::loadAseprite(app.gpu(), core::assetPath("sprites/hero.json"))`,
+  then per object `anim_.play(sheet_, "walk"); anim_.update(dt); sprite.uv = anim_.uv(facingLeft);`.
+  Clips come from Aseprite tags; `eventFired("hit")` for events on frames (tutorial step 12).
 - New shaders: drop `foo.vert`/`foo.frag` in `shaders/`, load
   `core::shaderPath("foo.vert.spv")`.
 - Destroying a texture/buffer that an in-flight frame still uses is an error; call
@@ -204,7 +209,7 @@ Tips
 | Action | Keyboard / mouse | Gamepad / Steam Deck |
 |---|---|---|
 | Move | WASD / arrows | Left stick / D-pad |
-| Particle burst | Space | A |
+| Particle burst (and the slime's burst animation) | Space | A |
 | Zoom | Mouse wheel, + / − | Bumpers |
 | Mute sound | M | |
 | Debug UI (Debug builds) | ` (key below Esc) | |

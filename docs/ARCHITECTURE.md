@@ -97,6 +97,7 @@ src/
     Camera2D.h/.cpp           orthographic camera, screen <-> world
     SpriteBatch.h/.cpp        batched textured quads, drawText
     Font.h/.cpp               TrueType font baked into an atlas (stb_truetype)
+    Animation.h/.cpp          SpriteSheet (grid or Aseprite JSON), clips, Animator
   game/
     DemoGame.h/.cpp           example game
 shaders/                      GLSL sources (compiled to SPIR-V at build time)
@@ -234,6 +235,20 @@ atlas/sprite-sheet sub-rectangles and flipping. `stats()` reports sprites and dr
 `measure(text, size)`, `lineHeight(size)` and `ascent(size)` support layout. Text is drawn
 with `SpriteBatch::drawText(font, utf8, position, TextStyle)`; `TextStyle` sets size,
 colour, alignment (`Left`/`Center`/`Right`), line spacing and pixel snapping.
+
+**`render2d::SpriteSheet` / `Animator`** (`render2d/Animation.h`): sprite-sheet
+animation. A `SpriteSheet` owns a texture, its frames (UV rectangle, pixel size, default
+duration) and named `AnimationClip`s (frame indices, per-frame durations, `Loop` / `Once` /
+`PingPong`, and named events on frames). Sheets come from a grid (`loadGrid`, clips added
+in code) or from **Aseprite's JSON export** (`loadAseprite`: tags become clips with their
+frame durations and directions; parsed with nlohmann/json, keeping file order for "Hash"
+exports). They load with nearest filtering and no mipmaps, so neighbouring frames never
+blend. An `Animator` plays one clip for one object: `play` (a no-op if that clip is
+already playing, so the game can state the wanted clip every step), `update(dt)` (handles
+several frames per step, fires the events of every frame entered, and has a tiny tolerance
+so 60 Hz steps change frames exactly on time), `uv(flipX)`, `finished()`,
+`eventFired(name)`, and a `speed` multiplier. It points at its sheet, which must stay alive
+and in place.
 
 ### 3.4 audio
 
@@ -607,6 +622,7 @@ in linear**. Data textures (normal maps, masks) should use `TextureDesc::srgb = 
 | stb | pinned commit | image loading (stb_image), font rasterisation (stb_truetype) | header (impl in `Implementations.cpp`) |
 | miniaudio | 0.11.23 | audio output, mixing, decoding (WAV/FLAC/MP3, OGG via its bundled stb_vorbis), 3D sound | header (impl in `audio/MiniaudioImpl.cpp`) |
 | Dear ImGui | 1.92.9 | debug UI, with its SDL3 and Vulkan backends | static library `imgui` |
+| nlohmann/json | 3.12.0 | JSON: Aseprite sprite sheets (and later settings and saves) | header only |
 
 Global definitions: `VK_NO_PROTOTYPES`, `GLM_FORCE_DEPTH_ZERO_TO_ONE`,
 `GLM_FORCE_RADIANS`. On Linux, `third_party` also links `pthread`, `dl` and `m` for

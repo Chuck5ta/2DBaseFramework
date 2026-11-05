@@ -22,7 +22,7 @@
 ## 1. Overview
 
 The build uses **CMake** (≥ 3.22). On the first configure, CMake downloads the pinned
-libraries (SDL3, Vulkan headers, volk, VMA, GLM, stb, miniaudio, Dear ImGui), so the first build needs **Git** and
+libraries (SDL3, Vulkan headers, volk, VMA, GLM, stb, miniaudio, Dear ImGui, nlohmann/json), so the first build needs **Git** and
 an internet connection. Later builds work offline.
 
 | | Windows | Linux | Steam Deck |

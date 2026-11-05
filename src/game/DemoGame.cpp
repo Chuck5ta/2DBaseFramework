@@ -88,6 +88,12 @@ void DemoGame::onInit(core::Application& app)
     pixelArt.mipmaps = false;
     pixelArt.wrap = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     playerTexture_ = gfx::Texture::fromFile(gpu, core::assetPath("textures/player.png"), pixelArt);
+    // Animated sprites. The slime sheet is an Aseprite export: its tags (idle, hop,
+    // burst) become clips. The coin is a plain row of 16x16 frames.
+    slimeSheet_ = SpriteSheet::loadAseprite(gpu, core::assetPath("sprites/slime.json"));
+    slimeSheet_.clip("hop")->addEvent(5, "land"); // frame 5: the slime hits the ground
+    coinSheet_ = SpriteSheet::loadGrid(gpu, core::assetPath("sprites/coin.png"), {16, 16});
+    playerAnim_.play(slimeSheet_, "idle");
     tileTexture_ = makeTileTexture(gpu);
     orbTexture_ = makeOrbTexture(gpu);
     font_ = Font::load(gpu, core::assetPath("fonts/Roboto-Medium.ttf")); // baked at 48 px
@@ -185,6 +191,23 @@ void DemoGame::onFixedUpdate(core::Application& app, float dt)
     }
     popups_.erase(std::remove_if(popups_.begin(), popups_.end(), [](const Popup& p) { return p.life <= 0.0f; }),
                   popups_.end());
+
+    // --- Animation: pick the clip from what the player is doing, then advance it ---
+    if (bursting_ && playerAnim_.finished())
+        bursting_ = false; // the burst is over: back to idle or hopping
+    if (!bursting_)
+        playerAnim_.play(slimeSheet_, glm::length(playerVel_) > 30.0f ? "hop" : "idle");
+    playerAnim_.update(dt);
+
+    // A puff of dust each time the slime lands (the "land" event on the hop clip).
+    if (playerAnim_.eventFired("land")) {
+        std::uniform_real_distribution<float> spread(-1.0f, 1.0f);
+        for (int i = 0; i < 6; ++i) {
+            const glm::vec2 velocity(spread(rng_) * 40.0f, -10.0f - std::abs(spread(rng_)) * 15.0f);
+            particles_.push_back({playerPos_ + glm::vec2(spread(rng_) * 8.0f, 5.0f), velocity, 0.35f, 0.35f,
+                                  Color(0.85f, 0.8f, 0.7f, 0.8f)});
+        }
+    }
 }
 
 void DemoGame::onUpdate(core::Application& app, float dt)
@@ -220,6 +243,8 @@ void DemoGame::onUpdate(core::Application& app, float dt)
     if (in.keyPressed(SDL_SCANCODE_SPACE) || in.gamepadPressed(SDL_GAMEPAD_BUTTON_SOUTH)) {
         spawnBurst(playerPos_, 60, colors::Blue);
         app.audio().play(whooshSound_, {.volume = 0.8f});
+        playerAnim_.play(slimeSheet_, "burst", true); // restart, even if already bursting
+        bursting_ = true;
     }
 
     // --- Zoom: mouse wheel, +/- keys, gamepad bumpers ---
@@ -279,6 +304,8 @@ void DemoGame::onDebugUI(core::Application& app)
     ImGui::SameLine();
     if (ImGui::Button("Go to the pond"))
         playerPos_ = prevPlayerPos_ = (kPond.min + kPond.max) * 0.5f;
+    ImGui::Text("Animation: %s, frame %d", playerAnim_.clipName().c_str(), playerAnim_.frame());
+    ImGui::SliderFloat("Animation speed", &playerAnim_.speed, 0.0f, 3.0f, "%.2fx");
 
     ImGui::SeparatorText("Camera");
     ImGui::SliderFloat("Zoom", &camera_.zoom, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
@@ -304,6 +331,8 @@ void DemoGame::onDebugUI(core::Application& app)
         ImGui::Image(ui.texture(tileTexture_), size);
         ImGui::SameLine();
         ImGui::Image(ui.texture(orbTexture_), size);
+        ImGui::Image(ui.texture(slimeSheet_.texture()), ImVec2(224.0f * scale, 64.0f * scale));
+        ImGui::Image(ui.texture(coinSheet_.texture()), ImVec2(128.0f * scale, 16.0f * scale));
         ImGui::Text("Font atlas (%u x %u):", font_.texture().width(), font_.texture().height());
         ImGui::Image(ui.texture(font_.texture()), ImVec2(256.0f * scale, 256.0f * scale));
     }
@@ -351,13 +380,16 @@ void DemoGame::onRender(core::Application& app, gfx::FrameContext& frame)
     batch_->drawText(font_, "CAVE", {(kCave.min.x + kCave.max.x) * 0.5f, kCave.min.y + 8.0f}, label);
     batch_->drawText(font_, "POND", {(kPond.min.x + kPond.max.x) * 0.5f, kPond.min.y + 8.0f}, label);
 
-    // --- Coins: bob up and down and pulse ---
+    // --- Coins: bob up and down and spin ---
+    // Lots of identical looping objects don't need an Animator each: pick the frame
+    // from the time (offset per coin, so they don't all spin in step).
     for (const Coin& c : coins_) {
+        const int coinFrame = int(t * 12.0f + c.phase * 2.0f) % coinSheet_.frameCount();
         Sprite s;
         s.position = c.position + glm::vec2(0.0f, std::sin(t * 3.0f + c.phase) * 3.0f);
-        s.size = glm::vec2(14.0f + std::sin(t * 6.0f + c.phase) * 1.5f);
-        s.color = colors::Yellow;
-        batch_->draw(orbTexture_, s);
+        s.size = glm::vec2(16.0f);
+        s.uv = coinSheet_.frame(coinFrame).uv;
+        batch_->draw(coinSheet_.texture(), s);
     }
 
     // --- Particles: shrink and fade out as they age ---
@@ -375,11 +407,9 @@ void DemoGame::onRender(core::Application& app, gfx::FrameContext& frame)
     player.position = glm::mix(prevPlayerPos_, playerPos_, app.interpolationAlpha());
     player.size = glm::vec2(kPlayerSize);
     player.origin = glm::vec2(0.5f, 0.8f); // pivot near the feet
-    player.uv = facingLeft_ ? UvRect{}.flippedX() : UvRect{};
-    // A little squash & stretch while moving.
-    const float speed01 = std::min(glm::length(playerVel_) / kPlayerSpeed, 1.0f);
-    player.size.y *= 1.0f + 0.08f * speed01 * std::sin(t * 18.0f);
-    batch_->draw(playerTexture_, player);
+    // The current frame of the player's animation (the art faces right).
+    player.uv = playerAnim_.uv(facingLeft_);
+    batch_->draw(slimeSheet_.texture(), player);
 
     // --- Debug drawing, switched on in the debug UI ---
     if (showPickupRange_) {
