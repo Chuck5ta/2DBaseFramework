@@ -34,7 +34,7 @@ The code is split into layers. Each layer only depends on the layers below it.
 flowchart TD
     game["game/  (DemoGame or your game)"]
     r2d["render2d/  SpriteBatch · Camera2D · Font"]
-    core["core/  Application · Window · Input · Actions · Paths · Log"]
+    core["core/  Application · Window · Input · Actions · GameState · Paths · Log"]
     aud["audio/  AudioEngine (miniaudio)"]
     dbg["debugui/  DebugUI (Dear ImGui)"]
     gfx["gfx/  VulkanContext · Swapchain · Renderer · Buffer · Image · Texture · Pipeline · Descriptors"]
@@ -54,7 +54,7 @@ flowchart TD
 
 | Layer | Namespace | Responsibility | Shared with Game3D |
 |---|---|---|---|
-| `src/core` | `core` | Program lifetime, main loop, window, input, input actions, file paths, logging | Yes, identical |
+| `src/core` | `core` | Program lifetime, main loop, window, input, input actions, game states, file paths, logging | Yes, identical |
 | `src/gfx` | `gfx` | Everything Vulkan: device, swapchain, frames, memory, textures, pipelines | Yes, identical |
 | `src/audio` | `audio` | Sound effects, music, 3D sound (miniaudio) | Yes, identical |
 | `src/debugui` | `debugui` | In-game debug overlay (Dear ImGui) | Yes, identical |
@@ -75,6 +75,7 @@ src/
     Window.h/.cpp             SDL window, pixel size, fullscreen, Vulkan surface
     Input.h/.cpp              keyboard / mouse / gamepad state per frame
     Actions.h/.cpp            named input actions: bindings, rebinding, button prompts
+    GameState.h/.cpp          game states (title, pause, game over) on a stack above the Game
     Paths.h/.cpp              basePath(), shaderPath(), assetPath()
     Log.h                     LOG_* macros, core::fatal()
   audio/
@@ -178,6 +179,34 @@ does ("jump", "left") and asks about that name, never about a key.
   A/B/X/Y, PlayStation Cross/Circle/Square/Triangle, Nintendo).
 - `Application` updates it once per frame, after events and **before** `onFixedUpdate`, so
   both hooks see this frame's presses.
+
+**Game states** (`core/GameState.h`, `app.states()`): screens such as a title, a pause menu
+or a game-over screen, as classes derived from `core::GameState`, on a stack above the
+`Game`. The `Game` is always the bottom layer.
+
+```mermaid
+flowchart BT
+    game["Game (always the bottom layer)"] --> hud["e.g. Gameplay HUD<br/>pausesBelow = false"] --> pause["e.g. Pause menu (top)<br/>pausesBelow = true"]
+```
+
+- A state has the `Game`'s hooks (`onFixedUpdate`, `onUpdate`, `onPreRender`, `onRender`,
+  `onResize`, `onDebugUI`) plus `onEnter`/`onExit` (added to / removed from the stack) and
+  `onPause`/`onResume`. The `Game` gets `onPause`/`onResume` too.
+- Two settings per state: **`pausesBelow`** (default true: the layers below get no
+  `onFixedUpdate`/`onUpdate`) and **`hidesBelow`** (default false: the layers below aren't
+  drawn). Updating and drawing go bottom to top, starting at the lowest layer not paused
+  (or hidden) by a state above it. `onDebugUI` goes to every state.
+- `push`, `pop`, `replace` (pop, then push) and `clear` are **queued** and applied at the
+  start of the next frame, after `actions.update()`. So a state can remove itself from its
+  own hooks, and a frame never runs with a half-changed stack. `onEnter`/`onExit` may queue
+  further changes (a splash screen replacing itself), applied in the same frame up to a
+  limit. Then each layer whose paused state changed gets `onPause` or `onResume`.
+- After any change, `Actions::clearPresses()` forgets that frame's presses and buffered
+  `consume` presses, so the press that closed a menu can't also act in the game.
+- `timeInState()` counts the seconds a state has been active (not while paused).
+- At shutdown, after the GPU is idle, states get `onExit` top first and are destroyed,
+  then `Game::onShutdown` runs.
+- The Engine panel's **Game states** section lists the stack.
 
 **`core::Paths`** resolves everything relative to the executable directory
 (`SDL_GetBasePath()`): `shaderPath("x.vert.spv")` → `<exe>/shaders/…`,
@@ -414,6 +443,7 @@ flowchart LR
     app --> win["Window"]
     app --> inp["Input"]
     app --> act["Actions"]
+    app --> st["StateStack"]
     app --> ctx["gfx::VulkanContext"]
     app --> ren["gfx::Renderer"]
     app --> aud["audio::AudioEngine"]
@@ -461,6 +491,8 @@ sequenceDiagram
         Note over App: quit / resize / F11 handled here
         App->>App: dt = clamp(now - last, 0, 0.25 s)
         App->>App: actions.update() (named actions from this frame's input)
+        App->>App: states.applyChanges() (queued push/pop: onEnter/onExit, onPause/onResume)
+        Note over App,G: below, "Game" means the Game and its states, bottom to top,<br/>skipping layers that a state above pauses (updates) or hides (drawing)
         loop while accumulator ≥ fixedStep
             App->>G: onFixedUpdate(fixedStep)
         end
@@ -720,6 +752,7 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 | CPU-side sprite transform | Trivial shaders, unlimited batching of mixed transforms | CPU cost per sprite (fine for tens of thousands) |
 | Wait-idle on swapchain recreation | Simplest correct approach | Brief stall on resize only |
 | Fonts baked with stb_truetype into a regular texture | One small header, any .ttf, text batches with sprites through the same pipeline | Sharpest near the baked size; bake large titles separately (or switch to MSDF later) |
+| Game states on a stack above the `Game`, with changes applied next frame | Pause = push a state; the game needs no "if paused" checks; a state can safely pop itself; an existing game adopts states without restructuring | One frame of delay on every change; games that want screens as separate scenes put gameplay in a state too |
 | Named input actions, with the raw `Input` still available | Rebinding, button prompts and gamepad support come for free; the help text can't go out of date; a press is buffered for fixed steps | Actions are looked up by string (a small map lookup per call); the wheel and cursor stay raw `Input` |
 | Fixed-timestep simulation | Deterministic gameplay, frame-rate independent | Needs interpolation for smooth rendering |
 | Dear ImGui for debug tools, in Debug builds only | The standard for in-engine tools: tiny code to write a panel, huge widget set, backends for SDL3 + Vulkan | Not meant for player-facing UI (the game's own HUD/menus use `render2d`) |
@@ -732,6 +765,9 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 - Text is baked at one size per `Font`; for very large or zooming text consider MSDF fonts.
 - Audio: one listener (no split-screen); music is one track at a time. One shared reverb (no
   per-zone reverbs mixed together); occlusion is up to the game (see the Game3D tutorial).
+- Game states: no built-in transitions (fades, slides) or menu widgets; the 2D demo's
+  `Menu` (tutorial step 14) is a starting point. States are created in code, not loaded
+  from data.
 - Input actions: one gamepad (no local multiplayer yet); no chords or combos ("Ctrl+S",
   double-tap); the mouse wheel and cursor aren't bindable. Bindings aren't saved to disk
   by the framework yet (`saveBindings()` gives the text; settings files are planned).

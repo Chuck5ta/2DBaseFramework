@@ -254,6 +254,14 @@ bool Actions::consume(std::string_view action, float bufferSeconds)
     return true;
 }
 
+void Actions::clearPresses()
+{
+    for (auto& [name, a] : actions_) {
+        a.pressed = false;
+        a.consumed = true;
+    }
+}
+
 // --- Rebinding ----------------------------------------------------------------------
 
 const std::vector<Binding>& Actions::bindings(std::string_view action) const

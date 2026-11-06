@@ -6,8 +6,8 @@ every step you can build and run the game and see the result.
 
 **What you'll learn:** the `Game` hooks, drawing sprites, loading textures, keyboard and
 gamepad input, the fixed timestep with interpolation, cameras, culling, simple particles,
-sprite animation, a HUD, text, sound, audio effects, a debug UI and rebindable controls
-(input actions).
+sprite animation, a HUD, text, sound, audio effects, a debug UI, rebindable controls
+(input actions) and menu screens (game states).
 
 **Before you start:** the project builds and runs (see [BUILDING.md](BUILDING.md)). For
 background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -27,6 +27,7 @@ background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
 | [11](#step-11--sound-zones-reverb-and-muffling) | Audio effects: reverb and a low-pass filter | A cave that echoes and a pond that muffles |
 | [12](#step-12--sprite-animation) | Sprite sheets, clips and an Animator | A hopping slime with dust on landing; spinning coins |
 | [13](#step-13--input-actions-and-rebinding) | Named input actions with `app.actions()` | Help text that follows your device; rebinding in the debug UI |
+| [14](#step-14--game-states-title-pause-and-game-over) | Game states with `app.states()` | A title screen, 60-second rounds, a pause menu and a "Time's up" screen |
 
 > Every code listing in this tutorial was compiled (with warnings as errors) and run with
 > Vulkan validation enabled, step by step. If something doesn't work, compare with
@@ -1745,6 +1746,411 @@ the help panel shows its buttons. Open the debug UI (**`**) and click the **Cont
 title at the top: click **+** next to "burst" and press **J**. Now **J** bursts too.
 Click a binding to remove it, and **Reset all to defaults** to start again.
 
+---
+
+## Step 14 — Game states: title, pause and game over
+
+A real game is more than its gameplay: it starts on a title screen, pauses, and ends with
+a result. Each of those is a **game state**: a screen with its own update and drawing that
+sits on top of the game.
+
+`app.states()` (`core/GameState.h`) is a **stack** of them, above your `Game`:
+
+```
+  Pause         <- top: updated and drawn last
+  ...
+  your Game     <- always the bottom layer
+```
+
+A state is a class derived from `core::GameState`, with the same hooks as the game
+(`onUpdate`, `onFixedUpdate`, `onRender`...) plus `onEnter`/`onExit` (added to and removed
+from the stack) and `onPause`/`onResume`. Two settings decide how it affects what's below:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `pausesBelow` | `true` | Layers below get no `onFixedUpdate`/`onUpdate`: the game freezes |
+| `hidesBelow` | `false` | Layers below aren't drawn (for a full-screen, opaque menu) |
+
+So a pause menu is just a state pushed on top: the game stops, still visible underneath,
+and carries on when the state is popped. `push`, `pop`, `replace` (swap the top state for
+another) and `clear` take effect **at the start of the next frame**, so a state can remove
+itself from its own `onUpdate` safely.
+
+This step makes the demo a little game: rounds of 60 seconds, a title screen, a pause
+menu, and a "Time's up" screen with the best score.
+
+### The game's side
+
+In **`MyGame.h`**, after `onDebugUI`'s declaration:
+
+```cpp
+    void onPause(core::Application& app) override; // a menu opened over the game
+
+    // Used by the menu screens (game states) in MyGame.cpp.
+    void startRound();
+    int bestScore() const { return bestScore_; }
+```
+
+and at the end of the members:
+
+```cpp
+    // Rounds: seconds left (0 = no round running), and the best score so far.
+    float roundTime_ = 0.0f;
+    int bestScore_ = 0;
+    friend class MenuState; // the menu screens draw with our SpriteBatch, font and HUD camera
+```
+
+`onPause` is a `core::Game` hook too: it runs when a state that pauses the game is pushed.
+(`friend class MenuState` lets the menu screens draw with the game's `SpriteBatch`, font and
+HUD camera, rather than loading their own.)
+
+### A menu
+
+In **`MyGame.cpp`**, add this inside the `namespace { }` (after `helpText`). It's a list of
+choices that works with the keys, a gamepad, and the mouse:
+
+```cpp
+constexpr float kRoundSeconds = 60.0f;
+
+// A list of choices, centred on the screen. Keys, gamepad (the "up", "down" and
+// "confirm" actions) and mouse (point and click) all work.
+class Menu {
+public:
+    explicit Menu(std::vector<std::string> items) : items_(std::move(items)) {}
+
+    // The index of the item chosen this frame, or -1.
+    int update(core::Application& app)
+    {
+        const core::Actions& actions = app.actions();
+        const int count = int(items_.size());
+        if (actions.pressed("up"))
+            selected_ = (selected_ + count - 1) % count;
+        if (actions.pressed("down"))
+            selected_ = (selected_ + 1) % count;
+
+        // The mouse picks whatever it moves over (where the items were last drawn).
+        const core::Input& in = app.input();
+        const glm::vec2 mouse = in.mousePosition();
+        for (int i = 0; i < int(boxes_.size()); ++i) {
+            const glm::vec4& b = boxes_[size_t(i)]; // x, y, width, height in pixels
+            if (mouse.x < b.x || mouse.y < b.y || mouse.x > b.x + b.z || mouse.y > b.y + b.w)
+                continue;
+            if (in.mouseDelta() != glm::vec2(0.0f))
+                selected_ = i;
+            if (in.mousePressed(SDL_BUTTON_LEFT))
+                return i;
+        }
+        return actions.pressed("confirm") ? selected_ : -1;
+    }
+
+    // Draws the items from `top` downwards (HUD pixels); the chosen one is highlighted.
+    void draw(SpriteBatch& batch, const Font& font, glm::vec2 top, float ui)
+    {
+        TextStyle style;
+        style.size = 30.0f * ui;
+        style.align = TextAlign::Center;
+        style.snapToPixel = true;
+        const float rowHeight = 46.0f * ui;
+        const glm::vec2 box(260.0f * ui, rowHeight - 6.0f * ui);
+        boxes_.clear();
+        for (int i = 0; i < int(items_.size()); ++i) {
+            const glm::vec2 corner(top.x - box.x * 0.5f, top.y + float(i) * rowHeight);
+            boxes_.emplace_back(corner, box);
+            const bool chosen = i == selected_;
+            if (chosen)
+                batch.drawRect(corner, box, Color(1.0f, 1.0f, 1.0f, 0.15f));
+            style.color = chosen ? colors::Yellow : colors::White;
+            const float textY = corner.y + (box.y - font.measure(items_[size_t(i)], style.size).y) * 0.5f;
+            batch.drawText(font, items_[size_t(i)], {top.x, textY}, style);
+        }
+    }
+
+private:
+    std::vector<std::string> items_;
+    int selected_ = 0;
+    std::vector<glm::vec4> boxes_;
+};
+```
+
+### The three screens
+
+Add these right after the `namespace { }`, before `onInit`. They share a base class that
+draws the dimmed game, a heading, a line of text and the menu:
+
+```cpp
+// --- Game states: the menu screens ---------------------------------------------------
+// Each is a core::GameState pushed onto app.states(). They pause the game underneath
+// (pausesBelow, the default) but let it show through, dimmed.
+
+// What the three screens share: the dimmed game, a heading, a line of text, a menu.
+class MenuState : public core::GameState {
+protected:
+    MenuState(MyGame& game, std::vector<std::string> items) : game_(game), menu_(std::move(items)) {}
+
+    void drawScreen(core::Application& app, gfx::FrameContext& frame, const std::string& heading,
+                    const std::string& text)
+    {
+        const glm::vec2 viewport(float(frame.extent.width), float(frame.extent.height));
+        const float ui = std::max(1.0f, viewport.y / 720.0f);
+        game_.hudCamera_.setViewport(viewport.x, viewport.y);
+        game_.hudCamera_.position = viewport * 0.5f;
+        SpriteBatch& batch = *game_.batch_;
+        batch.begin(frame, game_.hudCamera_.viewProjection());
+
+        // Fade the game out over a fifth of a second.
+        const float fade = std::min(timeInState() / 0.2f, 1.0f);
+        batch.drawRect({0.0f, 0.0f}, viewport, Color(0.02f, 0.03f, 0.06f, 0.65f * fade));
+
+        TextStyle style;
+        style.align = TextAlign::Center;
+        style.snapToPixel = true;
+        style.size = 64.0f * ui;
+        batch.drawText(game_.font_, heading, {viewport.x * 0.5f, viewport.y * 0.22f}, style);
+        style.size = 24.0f * ui;
+        style.color = Color(1.0f, 1.0f, 1.0f, 0.8f);
+        batch.drawText(game_.font_, text, {viewport.x * 0.5f, viewport.y * 0.22f + 84.0f * ui}, style);
+
+        menu_.draw(batch, game_.font_, {viewport.x * 0.5f, viewport.y * 0.58f}, ui); // below the player
+
+        style.size = 16.0f * ui;
+        style.color = Color(1.0f, 1.0f, 1.0f, 0.6f);
+        batch.drawText(game_.font_, app.actions().prompt("confirm") + ": select", {viewport.x * 0.5f, viewport.y - 48.0f * ui}, style);
+        batch.end();
+    }
+
+    MyGame& game_;
+    Menu menu_;
+};
+
+class TitleState : public MenuState {
+public:
+    explicit TitleState(MyGame& game) : MenuState(game, {"Play", "Quit"}) { name = "Title"; }
+
+    void onUpdate(core::Application& app, float) override
+    {
+        switch (menu_.update(app)) {
+        case 0: // Play
+            game_.startRound();
+            app.states().pop(); // the game carries on underneath (next frame)
+            break;
+        case 1:
+            app.quit();
+            break;
+        }
+    }
+    void onRender(core::Application& app, gfx::FrameContext& frame) override
+    {
+        const int best = game_.bestScore();
+        drawScreen(app, frame, "Slime Garden",
+                   best > 0 ? "Best score: " + std::to_string(best)
+                            : "Collect all the coins you can in " + std::to_string(int(kRoundSeconds)) + " seconds");
+    }
+};
+
+class PauseState : public MenuState {
+public:
+    explicit PauseState(MyGame& game) : MenuState(game, {"Resume", "Restart", "Quit to title"}) { name = "Pause"; }
+
+    // Muffle every sound while paused, as if heard through a wall.
+    void onEnter(core::Application& app) override { app.audio().setLowPass(audio::Bus::Master, 500.0f, 0.2f); }
+    void onExit(core::Application& app) override { app.audio().setLowPass(audio::Bus::Master, audio::kLowPassOff, 0.2f); }
+
+    void onUpdate(core::Application& app, float) override
+    {
+        if (app.actions().pressed("pause") || app.actions().pressed("back")) {
+            app.states().pop();
+            return;
+        }
+        switch (menu_.update(app)) {
+        case 0:
+            app.states().pop();
+            break;
+        case 1:
+            game_.startRound();
+            app.states().pop();
+            break;
+        case 2:
+            app.states().replace<TitleState>(game_); // swap this screen for the title
+            break;
+        }
+    }
+    void onRender(core::Application& app, gfx::FrameContext& frame) override
+    {
+        drawScreen(app, frame, "Paused", "");
+    }
+};
+
+class RoundOverState : public MenuState {
+public:
+    RoundOverState(MyGame& game, int score, bool newBest)
+        : MenuState(game, {"Play again", "Title"}), score_(score), newBest_(newBest)
+    {
+        name = "Round over";
+    }
+
+    void onUpdate(core::Application& app, float) override
+    {
+        // Ignore input for a moment, so a button still being mashed when time runs out
+        // doesn't skip the result.
+        if (timeInState() < 0.6f)
+            return;
+        switch (menu_.update(app)) {
+        case 0:
+            game_.startRound();
+            app.states().pop();
+            break;
+        case 1:
+            app.states().replace<TitleState>(game_);
+            break;
+        }
+    }
+    void onRender(core::Application& app, gfx::FrameContext& frame) override
+    {
+        drawScreen(app, frame, "Time's up!",
+                   "Score: " + std::to_string(score_) +
+                       (newBest_ ? "   New best!" : "   Best: " + std::to_string(game_.bestScore())));
+    }
+
+private:
+    int score_;
+    bool newBest_;
+};
+```
+
+### Starting, pausing and ending
+
+In `onInit`, replace the `"quit"` action with three for the menus:
+
+```cpp
+    actions.define("pause", {Binding::key(SDL_SCANCODE_ESCAPE), Binding::button(SDL_GAMEPAD_BUTTON_START)});
+    actions.define("confirm", {Binding::key(SDL_SCANCODE_RETURN), Binding::key(SDL_SCANCODE_SPACE),
+                               Binding::button(SDL_GAMEPAD_BUTTON_SOUTH)});
+    actions.define("back", {Binding::key(SDL_SCANCODE_BACKSPACE), Binding::button(SDL_GAMEPAD_BUTTON_EAST)});
+```
+
+and at the very end of `onInit`:
+
+```cpp
+    // Start on the title screen, over the (paused) game.
+    app.states().push<TitleState>(*this);
+```
+
+After `onShutdown`, add the round reset and the pause hook:
+
+```cpp
+// A fresh round: score, clock, player and coins back to the start.
+void MyGame::startRound()
+{
+    score_ = 0;
+    roundTime_ = kRoundSeconds;
+    playerPos_ = prevPlayerPos_ = glm::vec2(kWorldSize * 0.5f);
+    playerVel_ = glm::vec2(0.0f);
+    for (Coin& c : coins_)
+        c.position = randomWorldPoint();
+    particles_.clear();
+    popups_.clear();
+    bursting_ = false;
+}
+
+// A menu screen was pushed: onFixedUpdate and onUpdate stop until it's gone. Rendering
+// still blends the last two steps by interpolationAlpha(), which keeps changing, so the
+// frozen player would shimmer by a pixel or two. Make both steps the same.
+void MyGame::onPause(core::Application&)
+{
+    prevPlayerPos_ = playerPos_;
+}
+```
+
+At the start of `onFixedUpdate`, the round's clock:
+
+```cpp
+    // --- The round's clock: when it runs out, the "Time's up" screen takes over ---
+    if (roundTime_ > 0.0f) {
+        roundTime_ -= dt;
+        if (roundTime_ <= 0.0f) {
+            roundTime_ = 0.0f;
+            const bool newBest = score_ > bestScore_;
+            bestScore_ = std::max(bestScore_, score_);
+            app.states().push<RoundOverState>(*this, score_, newBest);
+            return; // (the push takes effect next frame; stop this step here)
+        }
+    }
+```
+
+In `onUpdate`, Esc no longer quits (that's on the title screen now). Replace the `"quit"`
+lines with:
+
+```cpp
+    if (actions.pressed("pause"))
+        app.states().push<PauseState>(*this); // on top from the next frame; the game stops
+```
+
+### The HUD
+
+In `onRender`, after the score, draw the clock:
+
+```cpp
+    // Top centre: the time left in the round, red for the last ten seconds.
+    if (roundTime_ > 0.0f) {
+        const int seconds = int(std::ceil(roundTime_));
+        char clock[16];
+        std::snprintf(clock, sizeof(clock), "%d:%02d", seconds / 60, seconds % 60);
+        TextStyle timer = hud;
+        timer.align = TextAlign::Center;
+        timer.color = seconds <= 10 ? colors::Red : colors::White;
+        batch_->drawText(font_, clock, {viewport.x * 0.5f, 14.0f * ui}, timer);
+    }
+```
+
+Change the help panel's `if (showHelp_) {` to
+`if (showHelp_ && !app.states().gamePaused()) {` (the menus show their own help), and in
+`helpText`, start the second line with the pause button:
+
+```cpp
+           actions.prompt("pause") + ": pause      " +
+           actions.prompt("mute") + ": mute      " + ...
+```
+
+For testing, in `onDebugUI`, show the round in the first line and add a button after
+"Reset score":
+
+```cpp
+    ImGui::Text("Score: %d   Best: %d   Time left: %.1f s", score_, bestScore_, double(roundTime_));
+```
+
+```cpp
+    ImGui::SameLine();
+    if (ImGui::Button("End round")) // quicker than waiting a minute to test the result screen
+        roundTime_ = std::min(roundTime_, 0.01f);
+```
+
+Things to notice:
+
+- **The game didn't need to know about menus.** Its `onUpdate` and `onFixedUpdate` simply
+  aren't called while a menu is up, so the player, coins, particles and clock all freeze
+  by themselves. Only `onPause` was needed, for the interpolation (see its comment).
+- **Pausing is one line**, `app.states().push<PauseState>(*this)`. Resuming is the pause
+  screen popping itself.
+- **`replace`** swaps the top state: "Quit to title" replaces the pause screen with the
+  title, in one step, without the game resuming in between.
+- **`timeInState()`** is the seconds since the state was entered (while active). The menus
+  fade in with it, and the "Time's up" screen ignores input for 0.6 s with it, so a button
+  being mashed when time runs out doesn't skip the result.
+- **`onEnter`/`onExit`** suit things that start and stop with a screen: the pause menu
+  muffles all sound with a low-pass on the master bus (step 11's effects) and restores it.
+- **A press is used once.** Whenever the stack changes, the framework forgets that
+  frame's presses (`Actions::clearPresses`), so the A that picked "Resume" doesn't also
+  burst, and a buffered `consume` won't fire afterwards.
+- **The Engine panel shows the stack.** Open the debug UI and expand **Game states** to see
+  each state, top first, and what's paused.
+- The best score is kept only while the game runs. Saving it is the next framework feature
+  (settings and save files).
+
+**Run it:** the game starts on the title. **Play** starts a round: collect coins until the
+clock runs out. **Esc** (or **Start** on a pad) pauses; the sound goes muffled. **Back**
+(or **B**) also resumes. Try the mouse on the menus too. In the debug UI, **End round**
+skips to the result.
+
 **That's the complete demo.** Your `MyGame` now behaves exactly like `DemoGame`. You can
 delete `DemoGame.h/.cpp` from your own projects once you no longer need them for reference.
 
@@ -1760,12 +2166,12 @@ Ideas, roughly in order of difficulty, each building on what you've used here:
    chasing the player with `glm::normalize(player - enemy)`.
 3. **Tilemaps from a file.** Load a map made in the Tiled editor (`.tmj` is JSON) and draw
    the visible tiles from a tileset atlas, just like step 4.
-4. **Game states.** A title screen, pause menu and game-over screen: a small state enum in
-   `MyGame`, switched on in `onUpdate`/`onRender`, with text from step 8.
+4. **More screens.** An options screen pushed from the pause menu (volume sliders with
+   left/right, the Controls bindings from step 13), or a "Get ready... 3, 2, 1" state
+   that doesn't pause the game but stops the player moving until it pops.
 5. **A level editor.** Grow the debug UI into a tool: click the world (convert the mouse
    with `camera_.screenToWorld`) to place coins when a "Place coins" checkbox is on.
-6. **Music and atmosphere.** A track with `playMusic`, a quieter one for menus, and a
-   crossfade between them when the game state changes. A pause menu that muffles
-   everything with `setLowPass(audio::Bus::Master, 500.0f)`.
+6. **Music and atmosphere.** A track with `playMusic`, a quieter one for the title, and a
+   crossfade between them in the title state's `onEnter`/`onExit`.
 7. **Physics.** Box2D v3 for proper collisions and rigid bodies, stepped in
    `onFixedUpdate`.

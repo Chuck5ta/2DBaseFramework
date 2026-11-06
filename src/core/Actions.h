@@ -83,6 +83,10 @@ public:
     // last `bufferSeconds` and not consumed yet. Then it's used up. A jump pressed just
     // before landing still happens; a punch press between fixed steps is never lost.
     bool consume(std::string_view action, float bufferSeconds = 0.15f);
+    // Forgets this frame's presses and any buffered ones (held actions stay down), so a
+    // press that was already used, e.g. to close a menu, can't act again. Game states
+    // call this whenever the stack changes.
+    void clearPresses();
 
     // --- Rebinding -----------------------------------------------------------------
     const std::vector<Binding>& bindings(std::string_view action) const;

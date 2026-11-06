@@ -8,6 +8,7 @@ a batched sprite renderer and audio, plus a playable demo showing how they fit t
 |---|---|---|
 | Platform | Window, keyboard/mouse, gamepads (incl. Steam Deck controls), hi-DPI | SDL3 |
 | Input actions | Named actions ("jump") with rebindable keys/buttons/sticks, button prompts for the device in use (Xbox, PlayStation, Nintendo labels), buffered presses, bindings as JSON | nlohmann/json |
+| Game states | A stack of screens (title, pause, game over) above the game: each can pause or hide what's below; safe push/pop/replace | your code |
 | GPU | Instance/device setup, swapchain, frames in flight, buffers, textures, pipelines | Vulkan 1.3 via volk + VMA |
 | 2D | Sprite batching, orthographic camera, atlas UVs, rect/line helpers | your code |
 | Animation | Sprite sheets (grid or Aseprite JSON export), clips with per-frame timing, loop/once/ping-pong, frame events | nlohmann/json |
@@ -101,6 +102,7 @@ src/
     Window              SDL window, Vulkan surface, fullscreen
     Input               keyboard, mouse, gamepad (pressed / down / released)
     Actions             named input actions: rebindable, with button prompts
+    GameState           title / pause / game-over screens on a stack (app.states())
     Paths               shaderPath(), assetPath()
     Log.h               LOG_INFO/WARN/ERROR, core::fatal()
   audio/                sound effects, music, 3D sound (shared with Game3D)
@@ -139,6 +141,8 @@ copied between them (or later moved into a shared library).
 Application::run()
  ├─ poll SDL events → Input, window resize → Renderer
  ├─ Actions update             named actions from this frame's input
+ ├─ States: apply push/pop    queued last frame (onEnter/onExit, onPause/onResume)
+ │    (below, "Game::" = the Game, then each state, skipping paused or hidden ones)
  ├─ Game::onFixedUpdate(dt)   0..n times at a fixed 60 Hz (gameplay/physics)
  ├─ Game::onUpdate(dt)        once per frame (input, camera)
  └─ Renderer
@@ -202,6 +206,10 @@ Tips
 - Effects: `app.audio().setReverb(audio::ReverbParams::preset(audio::ReverbPreset::Cave))`,
   `app.audio().setLowPass(audio::Bus::Sfx, 700.0f)` (muffled), `setEcho`, `setHighPass`.
   Changes glide smoothly. Try them all live in the debug UI (Engine → Audio → Audio effects).
+- Game states: derive from `core::GameState`, then `app.states().push<PauseState>(...)`.
+  By default a state pauses the game below it (its `onUpdate`/`onFixedUpdate` stop) and
+  lets it show through; `pop()` resumes. Changes apply at the start of the next frame, so
+  a state can pop itself. See tutorial step 14.
 - Input actions: define once in `onInit` with
   `app.actions().define("jump", {core::Binding::key(SDL_SCANCODE_SPACE), core::Binding::button(SDL_GAMEPAD_BUTTON_SOUTH)})`,
   then ask `actions.pressed("jump")`, `actions.vector("left", "right", "up", "down")`, or
@@ -216,6 +224,7 @@ Tips
 ### Demo controls
 | Action | Keyboard / mouse | Gamepad / Steam Deck |
 |---|---|---|
+| Play / start a 60-second round | Title screen: **Play** | |
 | Move | WASD / arrows | Left stick / D-pad |
 | Particle burst (and the slime's burst animation) | Space | A |
 | Zoom | Mouse wheel, + / − | Bumpers |
@@ -225,7 +234,8 @@ Tips
 | Show/hide help | H | |
 | Toggle vsync | V | |
 | Fullscreen | F11 / Alt+Enter | |
-| Quit | Esc | View (Back) |
+| Menus: choose / select / back | Up/Down (or mouse), Enter or Space (or click), Backspace | D-pad or stick, A, B |
+| Pause (Quit is on the title screen) | Esc | Start (Menu) |
 
 ---
 

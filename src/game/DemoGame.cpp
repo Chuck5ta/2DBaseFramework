@@ -106,11 +106,211 @@ std::string helpText(const core::Actions& actions)
     const bool pad = actions.lastDevice() == core::InputDevice::Gamepad;
     return movePrompt(actions) + ": move      " + actions.prompt("burst") + ": burst      " +
            (pad ? "" : "Wheel, ") + actions.prompt("zoom in") + "/" + actions.prompt("zoom out") + ": zoom\n" +
+           actions.prompt("pause") + ": pause      " +
            actions.prompt("mute") + ": mute      " + actions.prompt("vsync") + ": vsync      " +
            actions.prompt("help") + ": hide help      ` (below Esc): debug UI";
 }
 
+constexpr float kRoundSeconds = 60.0f;
+
+// A list of choices, centred on the screen. Keys, gamepad (the "up", "down" and
+// "confirm" actions) and mouse (point and click) all work.
+class Menu {
+public:
+    explicit Menu(std::vector<std::string> items) : items_(std::move(items)) {}
+
+    // The index of the item chosen this frame, or -1.
+    int update(core::Application& app)
+    {
+        const core::Actions& actions = app.actions();
+        const int count = int(items_.size());
+        if (actions.pressed("up"))
+            selected_ = (selected_ + count - 1) % count;
+        if (actions.pressed("down"))
+            selected_ = (selected_ + 1) % count;
+
+        // The mouse picks whatever it moves over (where the items were last drawn).
+        const core::Input& in = app.input();
+        const glm::vec2 mouse = in.mousePosition();
+        for (int i = 0; i < int(boxes_.size()); ++i) {
+            const glm::vec4& b = boxes_[size_t(i)]; // x, y, width, height in pixels
+            if (mouse.x < b.x || mouse.y < b.y || mouse.x > b.x + b.z || mouse.y > b.y + b.w)
+                continue;
+            if (in.mouseDelta() != glm::vec2(0.0f))
+                selected_ = i;
+            if (in.mousePressed(SDL_BUTTON_LEFT))
+                return i;
+        }
+        return actions.pressed("confirm") ? selected_ : -1;
+    }
+
+    // Draws the items from `top` downwards (HUD pixels); the chosen one is highlighted.
+    void draw(SpriteBatch& batch, const Font& font, glm::vec2 top, float ui)
+    {
+        TextStyle style;
+        style.size = 30.0f * ui;
+        style.align = TextAlign::Center;
+        style.snapToPixel = true;
+        const float rowHeight = 46.0f * ui;
+        const glm::vec2 box(260.0f * ui, rowHeight - 6.0f * ui);
+        boxes_.clear();
+        for (int i = 0; i < int(items_.size()); ++i) {
+            const glm::vec2 corner(top.x - box.x * 0.5f, top.y + float(i) * rowHeight);
+            boxes_.emplace_back(corner, box);
+            const bool chosen = i == selected_;
+            if (chosen)
+                batch.drawRect(corner, box, Color(1.0f, 1.0f, 1.0f, 0.15f));
+            style.color = chosen ? colors::Yellow : colors::White;
+            const float textY = corner.y + (box.y - font.measure(items_[size_t(i)], style.size).y) * 0.5f;
+            batch.drawText(font, items_[size_t(i)], {top.x, textY}, style);
+        }
+    }
+
+private:
+    std::vector<std::string> items_;
+    int selected_ = 0;
+    std::vector<glm::vec4> boxes_;
+};
+
 } // namespace
+
+// --- Game states: the menu screens ---------------------------------------------------
+// Each is a core::GameState pushed onto app.states(). They pause the game underneath
+// (pausesBelow, the default) but let it show through, dimmed.
+
+// What the three screens share: the dimmed game, a heading, a line of text, a menu.
+class MenuState : public core::GameState {
+protected:
+    MenuState(DemoGame& game, std::vector<std::string> items) : game_(game), menu_(std::move(items)) {}
+
+    void drawScreen(core::Application& app, gfx::FrameContext& frame, const std::string& heading,
+                    const std::string& text)
+    {
+        const glm::vec2 viewport(float(frame.extent.width), float(frame.extent.height));
+        const float ui = std::max(1.0f, viewport.y / 720.0f);
+        game_.hudCamera_.setViewport(viewport.x, viewport.y);
+        game_.hudCamera_.position = viewport * 0.5f;
+        SpriteBatch& batch = *game_.batch_;
+        batch.begin(frame, game_.hudCamera_.viewProjection());
+
+        // Fade the game out over a fifth of a second.
+        const float fade = std::min(timeInState() / 0.2f, 1.0f);
+        batch.drawRect({0.0f, 0.0f}, viewport, Color(0.02f, 0.03f, 0.06f, 0.65f * fade));
+
+        TextStyle style;
+        style.align = TextAlign::Center;
+        style.snapToPixel = true;
+        style.size = 64.0f * ui;
+        batch.drawText(game_.font_, heading, {viewport.x * 0.5f, viewport.y * 0.22f}, style);
+        style.size = 24.0f * ui;
+        style.color = Color(1.0f, 1.0f, 1.0f, 0.8f);
+        batch.drawText(game_.font_, text, {viewport.x * 0.5f, viewport.y * 0.22f + 84.0f * ui}, style);
+
+        menu_.draw(batch, game_.font_, {viewport.x * 0.5f, viewport.y * 0.58f}, ui); // below the player
+
+        style.size = 16.0f * ui;
+        style.color = Color(1.0f, 1.0f, 1.0f, 0.6f);
+        batch.drawText(game_.font_, app.actions().prompt("confirm") + ": select", {viewport.x * 0.5f, viewport.y - 48.0f * ui}, style);
+        batch.end();
+    }
+
+    DemoGame& game_;
+    Menu menu_;
+};
+
+class TitleState : public MenuState {
+public:
+    explicit TitleState(DemoGame& game) : MenuState(game, {"Play", "Quit"}) { name = "Title"; }
+
+    void onUpdate(core::Application& app, float) override
+    {
+        switch (menu_.update(app)) {
+        case 0: // Play
+            game_.startRound();
+            app.states().pop(); // the game carries on underneath (next frame)
+            break;
+        case 1:
+            app.quit();
+            break;
+        }
+    }
+    void onRender(core::Application& app, gfx::FrameContext& frame) override
+    {
+        const int best = game_.bestScore();
+        drawScreen(app, frame, "Slime Garden",
+                   best > 0 ? "Best score: " + std::to_string(best)
+                            : "Collect all the coins you can in " + std::to_string(int(kRoundSeconds)) + " seconds");
+    }
+};
+
+class PauseState : public MenuState {
+public:
+    explicit PauseState(DemoGame& game) : MenuState(game, {"Resume", "Restart", "Quit to title"}) { name = "Pause"; }
+
+    // Muffle every sound while paused, as if heard through a wall.
+    void onEnter(core::Application& app) override { app.audio().setLowPass(audio::Bus::Master, 500.0f, 0.2f); }
+    void onExit(core::Application& app) override { app.audio().setLowPass(audio::Bus::Master, audio::kLowPassOff, 0.2f); }
+
+    void onUpdate(core::Application& app, float) override
+    {
+        if (app.actions().pressed("pause") || app.actions().pressed("back")) {
+            app.states().pop();
+            return;
+        }
+        switch (menu_.update(app)) {
+        case 0:
+            app.states().pop();
+            break;
+        case 1:
+            game_.startRound();
+            app.states().pop();
+            break;
+        case 2:
+            app.states().replace<TitleState>(game_); // swap this screen for the title
+            break;
+        }
+    }
+    void onRender(core::Application& app, gfx::FrameContext& frame) override
+    {
+        drawScreen(app, frame, "Paused", "");
+    }
+};
+
+class RoundOverState : public MenuState {
+public:
+    RoundOverState(DemoGame& game, int score, bool newBest)
+        : MenuState(game, {"Play again", "Title"}), score_(score), newBest_(newBest)
+    {
+        name = "Round over";
+    }
+
+    void onUpdate(core::Application& app, float) override
+    {
+        // Ignore input for a moment, so a button still being mashed when time runs out
+        // doesn't skip the result.
+        if (timeInState() < 0.6f)
+            return;
+        switch (menu_.update(app)) {
+        case 0:
+            game_.startRound();
+            app.states().pop();
+            break;
+        case 1:
+            app.states().replace<TitleState>(game_);
+            break;
+        }
+    }
+    void onRender(core::Application& app, gfx::FrameContext& frame) override
+    {
+        drawScreen(app, frame, "Time's up!",
+                   "Score: " + std::to_string(score_) +
+                       (newBest_ ? "   New best!" : "   Best: " + std::to_string(game_.bestScore())));
+    }
+
+private:
+    int score_;
+    bool newBest_;
+};
 
 void DemoGame::onInit(core::Application& app)
 {
@@ -166,13 +366,41 @@ void DemoGame::onInit(core::Application& app)
     actions.define("mute", {Binding::key(SDL_SCANCODE_M)});
     actions.define("vsync", {Binding::key(SDL_SCANCODE_V)});
     actions.define("help", {Binding::key(SDL_SCANCODE_H)});
-    actions.define("quit", {Binding::key(SDL_SCANCODE_ESCAPE), Binding::button(SDL_GAMEPAD_BUTTON_BACK)});
+    actions.define("pause", {Binding::key(SDL_SCANCODE_ESCAPE), Binding::button(SDL_GAMEPAD_BUTTON_START)});
+    actions.define("confirm", {Binding::key(SDL_SCANCODE_RETURN), Binding::key(SDL_SCANCODE_SPACE),
+                               Binding::button(SDL_GAMEPAD_BUTTON_SOUTH)});
+    actions.define("back", {Binding::key(SDL_SCANCODE_BACKSPACE), Binding::button(SDL_GAMEPAD_BUTTON_EAST)});
+
+    // Start on the title screen, over the (paused) game.
+    app.states().push<TitleState>(*this);
 }
 
 void DemoGame::onShutdown(core::Application&)
 {
     // The GPU is idle here, so it is safe to destroy GPU resources.
     batch_.reset();
+}
+
+// A fresh round: score, clock, player and coins back to the start.
+void DemoGame::startRound()
+{
+    score_ = 0;
+    roundTime_ = kRoundSeconds;
+    playerPos_ = prevPlayerPos_ = glm::vec2(kWorldSize * 0.5f);
+    playerVel_ = glm::vec2(0.0f);
+    for (Coin& c : coins_)
+        c.position = randomWorldPoint();
+    particles_.clear();
+    popups_.clear();
+    bursting_ = false;
+}
+
+// A menu screen was pushed: onFixedUpdate and onUpdate stop until it's gone. Rendering
+// still blends the last two steps by interpolationAlpha(), which keeps changing, so the
+// frozen player would shimmer by a pixel or two. Make both steps the same.
+void DemoGame::onPause(core::Application&)
+{
+    prevPlayerPos_ = playerPos_;
 }
 
 glm::vec2 DemoGame::randomWorldPoint()
@@ -195,6 +423,18 @@ void DemoGame::spawnBurst(glm::vec2 at, int count, Color color)
 
 void DemoGame::onFixedUpdate(core::Application& app, float dt)
 {
+    // --- The round's clock: when it runs out, the "Time's up" screen takes over ---
+    if (roundTime_ > 0.0f) {
+        roundTime_ -= dt;
+        if (roundTime_ <= 0.0f) {
+            roundTime_ = 0.0f;
+            const bool newBest = score_ > bestScore_;
+            bestScore_ = std::max(bestScore_, score_);
+            app.states().push<RoundOverState>(*this, score_, newBest);
+            return; // (the push takes effect next frame; stop this step here)
+        }
+    }
+
     // Remember where we were, so rendering can interpolate between steps.
     prevPlayerPos_ = playerPos_;
 
@@ -289,8 +529,8 @@ void DemoGame::onUpdate(core::Application& app, float dt)
         return;
     }
 
-    if (actions.pressed("quit"))
-        app.quit();
+    if (actions.pressed("pause"))
+        app.states().push<PauseState>(*this); // on top from the next frame; the game stops
     if (actions.pressed("vsync"))
         app.renderer().setVsync(!app.renderer().vsync());
     if (actions.pressed("help"))
@@ -346,7 +586,7 @@ void DemoGame::onDebugUI(core::Application& app)
         return;
     }
 
-    ImGui::Text("Score: %d", score_);
+    ImGui::Text("Score: %d   Best: %d   Time left: %.1f s", score_, bestScore_, double(roundTime_));
     ImGui::Text("Coins: %d   Particles: %d   Popups: %d", int(coins_.size()), int(particles_.size()),
                 int(popups_.size()));
 
@@ -378,6 +618,9 @@ void DemoGame::onDebugUI(core::Application& app)
     ImGui::SameLine();
     if (ImGui::Button("Reset score"))
         score_ = 0;
+    ImGui::SameLine();
+    if (ImGui::Button("End round")) // quicker than waiting a minute to test the result screen
+        roundTime_ = std::min(roundTime_, 0.01f);
     ImGui::Checkbox("Show pickup range", &showPickupRange_);
 
     // Our own textures, shown inside the UI.
@@ -553,6 +796,17 @@ void DemoGame::onRender(core::Application& app, gfx::FrameContext& frame)
     batch_->draw(orbTexture_, glm::vec2(30.0f, 30.0f) * ui, 0.35f * ui, 0.0f, colors::Yellow);
     batch_->drawText(font_, std::to_string(score_), glm::vec2(50.0f, 14.0f) * ui, hud);
 
+    // Top centre: the time left in the round, red for the last ten seconds.
+    if (roundTime_ > 0.0f) {
+        const int seconds = int(std::ceil(roundTime_));
+        char clock[16];
+        std::snprintf(clock, sizeof(clock), "%d:%02d", seconds / 60, seconds % 60);
+        TextStyle timer = hud;
+        timer.align = TextAlign::Center;
+        timer.color = seconds <= 10 ? colors::Red : colors::White;
+        batch_->drawText(font_, clock, {viewport.x * 0.5f, 14.0f * ui}, timer);
+    }
+
     // Top right: frame rate and the active input device.
     TextStyle info = hud;
     info.size = 16.0f * ui;
@@ -570,7 +824,7 @@ void DemoGame::onRender(core::Application& app, gfx::FrameContext& frame)
     }
 
     // Bottom: a help panel, sized to fit its text.
-    if (showHelp_) {
+    if (showHelp_ && !app.states().gamePaused()) { // (menus show their own help)
         const std::string help = helpText(app.actions());
         TextStyle style = hud;
         style.size = 16.0f * ui;

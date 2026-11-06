@@ -148,15 +148,16 @@ int Application::run(Game& game)
         last = now;
         time_ += dt;
         actions_.update(*input_, time_); // named actions from this frame's input
+        states_.applyChanges(*this, game); // pushes/pops queued during the last frame
 
         // --- Simulation ---
         accumulator += dt;
         while (accumulator >= fixedStep) {
-            game.onFixedUpdate(*this, float(fixedStep));
+            states_.fixedUpdate(*this, game, float(fixedStep)); // the Game, then states (unless paused)
             accumulator -= fixedStep;
         }
         alpha_ = float(accumulator / fixedStep);
-        game.onUpdate(*this, float(dt));
+        states_.update(*this, game, float(dt));
         audio_->update(float(dt)); // release finished sounds, track motion for Doppler
         if (!running_)
             break;
@@ -166,6 +167,7 @@ int Application::run(Game& game)
             if (config_.debugUI.showEnginePanel)
                 drawEnginePanel();
             game.onDebugUI(*this);
+            states_.debugUI(*this);
             debugUI_->endFrame();
         }
 
@@ -173,11 +175,11 @@ int Application::run(Game& game)
         if (gfx::FrameContext* frame = renderer_->beginFrame()) {
             if (frame->extent.width != lastExtent.width || frame->extent.height != lastExtent.height) {
                 lastExtent = frame->extent;
-                game.onResize(*this, lastExtent.width, lastExtent.height);
+                states_.resize(*this, game, lastExtent.width, lastExtent.height);
             }
-            game.onPreRender(*this, *frame);
+            states_.preRender(*this, game, *frame); // the Game, then states (unless hidden)
             renderer_->beginMainPass();
-            game.onRender(*this, *frame);
+            states_.render(*this, game, *frame);
             if (debugUI_)
                 debugUI_->render(frame->cmd); // on top of everything
             renderer_->endMainPass();
@@ -206,6 +208,7 @@ int Application::run(Game& game)
     }
 
     renderer_->waitIdle();
+    states_.shutdown(*this); // states may hold GPU objects: the GPU is idle now
     game.onShutdown(*this);
     return 0;
 }
@@ -331,6 +334,18 @@ void Application::drawEnginePanel()
             ImGui::Text("Gamepad: %s", input_->gamepadName());
         else
             ImGui::TextDisabled("No gamepad connected");
+    }
+
+    if (ImGui::CollapsingHeader("Game states")) {
+        // Top first, as the player sees them.
+        if (states_.empty())
+            ImGui::TextDisabled("None: just the game");
+        for (size_t i = states_.size(); i > 0; --i) {
+            const GameState& s = *states_.at(i - 1);
+            ImGui::BulletText("%s%s%s%s", s.name.c_str(), states_.isActive(s) ? "" : " (paused)",
+                              s.pausesBelow ? ", pauses below" : "", s.hidesBelow ? ", hides below" : "");
+        }
+        ImGui::BulletText("Game%s", states_.gamePaused() ? " (paused)" : "");
     }
 
     ImGui::Separator();

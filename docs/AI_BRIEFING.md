@@ -7,7 +7,7 @@
 > (design and internals), `docs/TUTORIAL.md` (the demo built step by step) or
 > `docs/BUILDING.md` (Windows, Linux, Steam Deck builds).
 >
-> Framework state: **2026-11-05**. If the user's copy of the framework is older or newer,
+> Framework state: **2026-11-06**. If the user's copy of the framework is older or newer,
 > trust the source code over this file.
 
 ## 1. What it is
@@ -15,8 +15,9 @@
 An engine-free C++20 starter for **2D games** on Windows, Linux and Steam Deck. The game
 owns all the code: a thin platform layer (SDL3), a Vulkan 1.3 renderer, a batched sprite
 renderer with cameras and TrueType text, audio with effects, and a debug UI. A playable
-demo (`DemoGame`: a slime collecting coins, with particles, a HUD, sound zones and debug
-panels) shows how it fits together.
+demo (`DemoGame`: a slime collecting coins in 60-second rounds, with a title screen, pause
+menu and result screen, particles, a HUD, sound zones and debug panels) shows how it fits
+together.
 
 - **Language and build:** C++20, CMake ≥ 3.22 with presets (`debug`, `relwithdebinfo`,
   `release`, `vs2022`, `vs2026`). Every dependency is downloaded by CMake at a pinned
@@ -33,7 +34,7 @@ panels) shows how it fits together.
 ```
 src/
   main.cpp              AppConfig + run the game (swap DemoGame for your game here)
-  core/                 Application (loop, hooks), Window, Input, Actions, Paths, Log
+  core/                 Application (loop, hooks), Window, Input, Actions, GameState, Paths, Log
   gfx/                  Vulkan: VulkanContext, Swapchain, Renderer, Buffer, Image,
                         Texture, Pipeline(Builder), Descriptors
   render2d/             SpriteBatch, Camera2D, Font, Animation (SpriteSheet, Animator)
@@ -74,6 +75,7 @@ public:
     void onShutdown(core::Application& app) override;
     void onFixedUpdate(core::Application& app, float dt) override;
     void onUpdate(core::Application& app, float dt) override;
+    void onPause(core::Application& app) override; // a pausing game state was pushed
     void onRender(core::Application& app, gfx::FrameContext& frame) override;
     void onDebugUI(core::Application& app) override;
 
@@ -102,6 +104,18 @@ private:
 
 using namespace render2d;
 
+// A pause screen as a game state: while it's on app.states(), the game below gets no
+// onFixedUpdate/onUpdate (pausesBelow defaults to true) but is still drawn.
+class PauseState : public core::GameState {
+public:
+    PauseState() { name = "Pause"; }
+    void onUpdate(core::Application& app, float) override
+    {
+        if (app.actions().pressed("pause"))
+            app.states().pop(); // applied at the start of the next frame
+    }
+};
+
 void MyGame::onInit(core::Application& app)
 {
     batch_ = std::make_unique<SpriteBatch>(app.gpu(), app.renderer());
@@ -127,6 +141,12 @@ void MyGame::onInit(core::Application& app)
                             Binding::button(SDL_GAMEPAD_BUTTON_DPAD_DOWN)});
     actions.define("jump", {Binding::key(SDL_SCANCODE_SPACE), Binding::button(SDL_GAMEPAD_BUTTON_SOUTH)});
     actions.define("quit", {Binding::key(SDL_SCANCODE_ESCAPE), Binding::button(SDL_GAMEPAD_BUTTON_BACK)});
+    actions.define("pause", {Binding::key(SDL_SCANCODE_P), Binding::button(SDL_GAMEPAD_BUTTON_START)});
+}
+
+void MyGame::onPause(core::Application&)
+{
+    prevHeroPos_ = heroPos_; // frozen: no interpolation between the last two steps
 }
 
 void MyGame::onShutdown(core::Application&)
@@ -145,6 +165,8 @@ void MyGame::onUpdate(core::Application& app, float)
     const core::Actions& actions = app.actions();
     if (actions.pressed("quit"))
         app.quit();
+    if (actions.pressed("pause"))
+        app.states().push<PauseState>();
 
     moveInput_ = actions.vector("left", "right", "up", "down"); // length <= 1, analog on a stick; +Y is down
 
@@ -176,6 +198,8 @@ void MyGame::onRender(core::Application& app, gfx::FrameContext& frame)
     text.size = 24.0f;
     text.snapToPixel = true;
     batch_->drawText(font_, app.actions().prompt("jump") + ": jump", {16.0f, 12.0f}, text); // "Space" or "A"
+    if (app.states().gamePaused())
+        batch_->drawText(font_, "Paused", {16.0f, 44.0f}, text);
     batch_->end();
 }
 
@@ -222,8 +246,9 @@ and runs the loop. A game is a subclass of `core::Game`; every hook is optional:
 | `onRender(app, frame)` | inside the main pass (cleared, viewport set) | all drawing |
 | `onResize(app, w, h)` | swapchain size changed (pixels) | resize render targets |
 | `onShutdown(app)` | after `vkDeviceWaitIdle` | destroy GPU objects (reset `unique_ptr`s) |
+| `onPause(app)` / `onResume(app)` | a game state that pauses the game was pushed / is gone | snap interpolation (`prev = current`), pause loops |
 
-Frame order: events → actions update → `onFixedUpdate` × n → `onUpdate` → audio update → `onDebugUI` →
+Frame order: events → actions update → game-state changes → `onFixedUpdate` × n → `onUpdate` → audio update → `onDebugUI` →
 `onPreRender` → `onRender` → debug UI drawn on top → present.
 
 **Fixed timestep with interpolation.** Simulate in `onFixedUpdate` and keep the previous
@@ -232,10 +257,51 @@ refresh rate. Read held input (movement) in `onUpdate` into a member and apply i
 `onFixedUpdate`; for one-off presses read in `onFixedUpdate` (a punch, a jump) use
 `app.actions().consume("punch")`, so a press is never lost between steps or used twice.
 
-**`core::Application`:** `window()`, `input()`, `actions()`, `gpu()` (`gfx::VulkanContext&`),
+**`core::Application`:** `window()`, `input()`, `actions()`, `states()`, `gpu()` (`gfx::VulkanContext&`),
 `renderer()` (`gfx::Renderer&`), `audio()` (`audio::AudioEngine&`), `debugUI()`
 (`debugui::DebugUI*`, **null in Release builds**), `config()`, `time()` (seconds since
 start), `fps()`, `interpolationAlpha()`, `quit()`.
+
+**Game states** (`core/GameState.h`, `app.states()`): title screens, pause menus, game-over
+screens, as classes derived from `core::GameState`, on a stack **above** the `Game` (which
+is always the bottom layer). Use them instead of `if (paused)` checks in the game.
+
+```cpp
+class PauseState : public core::GameState {
+public:
+    explicit PauseState(MyGame& game) : game_(game) { name = "Pause"; } // pausesBelow = true by default
+    void onUpdate(core::Application& app, float) override {
+        if (app.actions().pressed("pause")) app.states().pop();
+    }
+    void onRender(core::Application& app, gfx::FrameContext& frame) override { /* dim + menu */ }
+private:
+    MyGame& game_; // states usually reach the game's resources through a reference
+};
+// in MyGame::onUpdate:  if (app.actions().pressed("pause")) app.states().push<PauseState>(*this);
+```
+
+- Hooks: the `Game`'s (`onFixedUpdate`, `onUpdate`, `onPreRender`, `onRender`, `onResize`,
+  `onDebugUI`) plus `onEnter`/`onExit` (added/removed; destroyed after `onExit`) and
+  `onPause`/`onResume`. Settings (public members, set in the constructor): `pausesBelow`
+  (default **true**: layers below get no `onFixedUpdate`/`onUpdate`), `hidesBelow` (default
+  false: layers below aren't drawn), `name` (shown in the Engine panel's "Game states").
+- Update and draw go bottom to top, from the lowest layer not paused/hidden by a state
+  above. `onDebugUI` reaches every state. `timeInState()` = seconds active (not paused).
+- `push(std::unique_ptr)` / `push<T>(args...)`, `pop()`, `replace<T>(args...)` (pop then
+  push, no resume in between), `clear()`: **queued, applied at the start of the next frame**,
+  so a state may pop itself from its own hooks. `onEnter`/`onExit` may queue more changes
+  (applied in the same frame). Reading: `empty()`, `size()`, `top()`, `at(i)` (0 = bottom),
+  `find<T>()`, `isActive(state)`, `gamePaused()`, `changesPending()`.
+- When the stack changes, `Actions::clearPresses()` runs: a press that closed a menu can't
+  also act below (incl. buffered `consume`).
+- Rendering still interpolates with `interpolationAlpha()` while paused, which keeps
+  changing: in `Game::onPause` (or a state's) set previous = current state, or the frozen
+  picture shimmers.
+- At shutdown (GPU idle): states `onExit` top first, then `Game::onShutdown`.
+- To push a state from `onInit` (start on a title screen) is fine: it applies before the
+  first update.
+- Game2D tutorial step 14 / `DemoGame`: `Menu` (keys, pad, mouse), `MenuState` base, title,
+  pause (muffles audio with a master-bus low-pass in `onEnter`/`onExit`) and result screens.
 
 **`core::AppConfig`** (set in `main.cpp`): `window` (`title`, `width`, `height`,
 `resizable`, `fullscreen`), `renderer` (`vsync`, `depthBuffer`, `clearColor` as **linear**
@@ -447,6 +513,8 @@ fadeInSeconds, fadeOutPreviousSeconds = 1})` (crossfades from the current track)
 
 ## 10. Conventions and rules for writing code here
 
+- **Menus and pausing are game states** (`app.states()`), not flags checked all over the
+  game.
 - **Gameplay controls are named actions** (`app.actions()`), never hard-coded keys: they
   must be rebindable, and help text uses `prompt()`. Raw `app.input()` is for the wheel,
   cursor and debug/editor keys.
@@ -502,13 +570,15 @@ fadeInSeconds, fadeOutPreviousSeconds = 1})` (crossfades from the current track)
   feature is added, update `README.md`, `docs/ARCHITECTURE.md`, `docs/BUILDING.md` if
   relevant, the tutorial, **and this briefing**.
 
-## 12. Known limitations (as of 2026-11-05)
+## 12. Known limitations (as of 2026-11-06)
 
 - Text is baked at one size per `Font` (for big or zooming text, bake larger or move to MSDF).
 - No bindless textures: batches break on texture changes (use atlases).
 - No tilemap loader or particle system beyond what the demo shows (particles are a vector).
 - Animation has no per-frame hitboxes yet (Aseprite slices aren't read) and no blending
   between clips (pixel art doesn't need it).
+- Game states: no built-in transitions (fades) or menu widgets (copy the Game2D demo's
+  `Menu`); states are made in code.
 - Input actions: one gamepad (no local multiplayer yet), no chords/combos ("Ctrl+S",
   double-tap; a fighting-game move list would be game code on top of actions), the wheel
   and cursor aren't bindable, and bindings aren't saved to disk by the framework yet.

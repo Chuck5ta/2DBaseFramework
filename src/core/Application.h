@@ -2,6 +2,7 @@
 
 #include "audio/Audio.h"
 #include "core/Actions.h"
+#include "core/GameState.h"
 #include "core/Input.h"
 #include "debugui/DebugUI.h"
 #include "core/Window.h"
@@ -38,6 +39,12 @@ public:
     virtual void onPreRender(Application&, gfx::FrameContext&) {}
     // Draw into the swapchain (main pass already begun, cleared, viewport set).
     virtual void onRender(Application&, gfx::FrameContext&) {}
+
+    // A game state that pauses the layers below it (a pause menu, a title screen) was
+    // pushed, so onFixedUpdate/onUpdate stop; onResume when it is gone. Good places to
+    // pause sounds, or to snap interpolated positions so a frozen frame doesn't shimmer.
+    virtual void onPause(Application&) {}
+    virtual void onResume(Application&) {}
 
     // Swapchain size changed (pixels).
     virtual void onResize(Application&, uint32_t /*width*/, uint32_t /*height*/) {}
@@ -79,6 +86,7 @@ public:
     Window& window()            { return *window_; }
     Input& input()              { return *input_; }
     Actions& actions()          { return actions_; } // named actions with rebindable inputs
+    StateStack& states()        { return states_; }  // title screens, pause menus... (core/GameState.h)
     gfx::VulkanContext& gpu()   { return *context_; }
     gfx::Renderer& renderer()   { return *renderer_; }
     audio::AudioEngine& audio() { return *audio_; }
@@ -106,6 +114,7 @@ private:
     bool running_ = false;
     double time_ = 0.0;
     Actions actions_;
+    StateStack states_;
     float fps_ = 0.0f;
     float alpha_ = 0.0f;
 

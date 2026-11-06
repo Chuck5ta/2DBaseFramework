@@ -22,6 +22,11 @@ public:
     void onUpdate(core::Application& app, float dt) override;
     void onRender(core::Application& app, gfx::FrameContext& frame) override;
     void onDebugUI(core::Application& app) override;
+    void onPause(core::Application& app) override; // a menu opened over the game
+
+    // Used by the menu screens (game states) in DemoGame.cpp.
+    void startRound();
+    int bestScore() const { return bestScore_; }
 
 private:
     struct Particle {
@@ -86,4 +91,9 @@ private:
     // a line about the last change.
     std::string rebinding_;
     std::string rebindNote_;
+
+    // Rounds: seconds left (0 = no round running), and the best score so far.
+    float roundTime_ = 0.0f;
+    int bestScore_ = 0;
+    friend class MenuState; // the menu screens draw with our SpriteBatch, font and HUD camera
 };
