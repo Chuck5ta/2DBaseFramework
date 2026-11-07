@@ -15,4 +15,14 @@ std::string basePath();
 std::string shaderPath(std::string_view fileName);
 std::string assetPath(std::string_view relativePath);
 
+// The player's own folder for settings and save files (created on first use; ends with
+// a separator). The game's install folder may be read-only, so never save next to the exe.
+//   Windows:             %APPDATA%\<organization>\<application>\ (e.g. C:\Users\you\AppData\Roaming\...)
+//   Linux / Steam Deck:  ~/.local/share/<organization>/<application>/
+// The names come from AppConfig. The environment variable GAME_SAVE_DIR=<folder>
+// overrides the folder (tests, or a "portable" copy of the game on a USB stick).
+std::string saveFolder();
+std::string savePath(std::string_view fileName);
+void setSaveFolderNames(std::string_view organization, std::string_view application); // Application calls this
+
 } // namespace core

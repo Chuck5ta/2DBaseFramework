@@ -166,6 +166,9 @@ public:
         }
     }
 
+    int selected() const { return selected_; }
+    void setItem(int index, std::string text) { items_[size_t(index)] = std::move(text); } // e.g. "Volume: 80%"
+
 private:
     std::vector<std::string> items_;
     int selected_ = 0;
@@ -186,6 +189,8 @@ protected:
     void drawScreen(core::Application& app, gfx::FrameContext& frame, const std::string& heading,
                     const std::string& text)
     {
+        if (app.states().top() != this)
+            return; // another menu (Options) is on top: let it have the screen
         const glm::vec2 viewport(float(frame.extent.width), float(frame.extent.height));
         const float ui = std::max(1.0f, viewport.y / 720.0f);
         game_.hudCamera_.setViewport(viewport.x, viewport.y);
@@ -218,9 +223,51 @@ protected:
     Menu menu_;
 };
 
+// Options: volume, fullscreen and vsync. It goes on top of the title or pause screen,
+// which step aside while it's there (see drawScreen). The framework keeps these in the
+// player's settings.json by itself; saveSettings() just writes them straight away.
+class OptionsState : public MenuState {
+public:
+    explicit OptionsState(DemoGame& game) : MenuState(game, {"Volume", "Fullscreen", "VSync", "Back"}) { name = "Options"; }
+
+    void onUpdate(core::Application& app, float) override
+    {
+        const core::Actions& actions = app.actions();
+        const int chosen = menu_.update(app);
+        if (menu_.selected() == 0) {
+            // Volume in steps of 10%: left/right, or choosing it goes up and wraps round.
+            int step = int(std::lround(app.audio().masterVolume() * 10.0f));
+            if (actions.pressed("left"))
+                step = std::max(step - 1, 0);
+            if (actions.pressed("right"))
+                step = std::min(step + 1, 10);
+            if (chosen == 0)
+                step = (step + 1) % 11;
+            app.audio().setMasterVolume(float(step) / 10.0f);
+        }
+        if (chosen == 1)
+            app.window().toggleFullscreen();
+        if (chosen == 2)
+            app.renderer().setVsync(!app.renderer().vsync());
+        if (chosen == 3 || actions.pressed("back") || actions.pressed("pause")) {
+            app.saveSettings(); // now, rather than only at exit
+            app.states().pop();
+        }
+    }
+    void onRender(core::Application& app, gfx::FrameContext& frame) override
+    {
+        const auto onOff = [](bool on) { return std::string(on ? "On" : "Off"); };
+        menu_.setItem(0, "Volume: " + std::to_string(int(std::lround(app.audio().masterVolume() * 100.0f))) + "%");
+        menu_.setItem(1, "Fullscreen: " + onOff(app.window().isFullscreen()));
+        menu_.setItem(2, "VSync: " + onOff(app.renderer().vsync()));
+        const core::Actions& actions = app.actions();
+        drawScreen(app, frame, "Options", actions.prompt("left") + "/" + actions.prompt("right") + ": volume");
+    }
+};
+
 class TitleState : public MenuState {
 public:
-    explicit TitleState(DemoGame& game) : MenuState(game, {"Play", "Quit"}) { name = "Title"; }
+    explicit TitleState(DemoGame& game) : MenuState(game, {"Play", "Options", "Quit"}) { name = "Title"; }
 
     void onUpdate(core::Application& app, float) override
     {
@@ -230,22 +277,28 @@ public:
             app.states().pop(); // the game carries on underneath (next frame)
             break;
         case 1:
+            app.states().push<OptionsState>(game_);
+            break;
+        case 2:
             app.quit();
             break;
         }
     }
     void onRender(core::Application& app, gfx::FrameContext& frame) override
     {
-        const int best = game_.bestScore();
+        // The best score and stats come from save.json, so they survive closing the game.
+        const core::SaveData& save = game_.saveData();
         drawScreen(app, frame, "Slime Garden",
-                   best > 0 ? "Best score: " + std::to_string(best)
-                            : "Collect all the coins you can in " + std::to_string(int(kRoundSeconds)) + " seconds");
+                   save.has("bestScore")
+                       ? "Best score: " + std::to_string(save.getInt("bestScore")) + "   Coins, all time: " +
+                             std::to_string(save.getInt("stats.coins"))
+                       : "Collect all the coins you can in " + std::to_string(int(kRoundSeconds)) + " seconds");
     }
 };
 
 class PauseState : public MenuState {
 public:
-    explicit PauseState(DemoGame& game) : MenuState(game, {"Resume", "Restart", "Quit to title"}) { name = "Pause"; }
+    explicit PauseState(DemoGame& game) : MenuState(game, {"Resume", "Restart", "Options", "Quit to title"}) { name = "Pause"; }
 
     // Muffle every sound while paused, as if heard through a wall.
     void onEnter(core::Application& app) override { app.audio().setLowPass(audio::Bus::Master, 500.0f, 0.2f); }
@@ -266,6 +319,9 @@ public:
             app.states().pop();
             break;
         case 2:
+            app.states().push<OptionsState>(game_); // on top; this screen stays underneath
+            break;
+        case 3:
             app.states().replace<TitleState>(game_); // swap this screen for the title
             break;
         }
@@ -371,6 +427,13 @@ void DemoGame::onInit(core::Application& app)
                                Binding::button(SDL_GAMEPAD_BUTTON_SOUTH)});
     actions.define("back", {Binding::key(SDL_SCANCODE_BACKSPACE), Binding::button(SDL_GAMEPAD_BUTTON_EAST)});
 
+    // Progress from earlier sessions. The first time there's no file: every get then
+    // returns its fallback (0 here).
+    save_.load();
+    bestScore_ = save_.getInt("bestScore");
+    // A setting of the game's own, kept with the framework's in settings.json.
+    showHelp_ = app.settings().getBool("game.showHelp", true);
+
     // Start on the title screen, over the (paused) game.
     app.states().push<TitleState>(*this);
 }
@@ -430,6 +493,13 @@ void DemoGame::onFixedUpdate(core::Application& app, float dt)
             roundTime_ = 0.0f;
             const bool newBest = score_ > bestScore_;
             bestScore_ = std::max(bestScore_, score_);
+
+            // Keep the best score and some lifetime stats in save.json.
+            save_.set("bestScore", bestScore_);
+            save_.set("stats.rounds", save_.getInt("stats.rounds") + 1);
+            save_.set("stats.coins", save_.getInt("stats.coins") + score_);
+            save_.save();
+
             app.states().push<RoundOverState>(*this, score_, newBest);
             return; // (the push takes effect next frame; stop this step here)
         }
@@ -533,8 +603,10 @@ void DemoGame::onUpdate(core::Application& app, float dt)
         app.states().push<PauseState>(*this); // on top from the next frame; the game stops
     if (actions.pressed("vsync"))
         app.renderer().setVsync(!app.renderer().vsync());
-    if (actions.pressed("help"))
+    if (actions.pressed("help")) {
         showHelp_ = !showHelp_;
+        app.settings().set("game.showHelp", showHelp_); // saved with the other settings at exit
+    }
     if (actions.pressed("mute"))
         app.audio().setMuted(!app.audio().muted());
 
@@ -621,6 +693,11 @@ void DemoGame::onDebugUI(core::Application& app)
     ImGui::SameLine();
     if (ImGui::Button("End round")) // quicker than waiting a minute to test the result screen
         roundTime_ = std::min(roundTime_, 0.01f);
+    ImGui::SameLine();
+    if (ImGui::Button("Delete save")) { // back to a first run: no best score, no stats
+        save_.erase();
+        bestScore_ = 0;
+    }
     ImGui::Checkbox("Show pickup range", &showPickupRange_);
 
     // Our own textures, shown inside the UI.

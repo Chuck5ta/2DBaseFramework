@@ -306,6 +306,11 @@ AudioEngine::AudioEngine(const AudioDesc& desc)
     Impl& m = *impl_;
     m.desc = desc;
     m.desc.maxVoices = std::max(desc.maxVoices, 1u);
+    // Keep the volumes even when there's no sound, so they read back (and are saved in
+    // the player's settings) as they were set.
+    m.master = std::max(desc.masterVolume, 0.0f);
+    m.sfx = std::max(desc.sfxVolume, 0.0f);
+    m.musicVolume = std::max(desc.musicVolume, 0.0f);
 
     const char* env = SDL_getenv("GAME_AUDIO");
     if (!desc.enabled || (env && env[0] == '0')) {

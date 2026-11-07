@@ -7,7 +7,7 @@ every step you can build and run the game and see the result.
 **What you'll learn:** the `Game` hooks, drawing sprites, loading textures, keyboard and
 gamepad input, the fixed timestep with interpolation, cameras, culling, simple particles,
 sprite animation, a HUD, text, sound, audio effects, a debug UI, rebindable controls
-(input actions) and menu screens (game states).
+(input actions), menu screens (game states) and saved settings and progress.
 
 **Before you start:** the project builds and runs (see [BUILDING.md](BUILDING.md)). For
 background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -28,6 +28,7 @@ background on any class used here, see [ARCHITECTURE.md](ARCHITECTURE.md).
 | [12](#step-12--sprite-animation) | Sprite sheets, clips and an Animator | A hopping slime with dust on landing; spinning coins |
 | [13](#step-13--input-actions-and-rebinding) | Named input actions with `app.actions()` | Help text that follows your device; rebinding in the debug UI |
 | [14](#step-14--game-states-title-pause-and-game-over) | Game states with `app.states()` | A title screen, 60-second rounds, a pause menu and a "Time's up" screen |
+| [15](#step-15--settings-and-save-files) | `core::SaveData` and `app.settings()` | An Options screen; the best score and your settings survive a restart |
 
 > Every code listing in this tutorial was compiled (with warnings as errors) and run with
 > Vulkan validation enabled, step by step. If something doesn't work, compare with
@@ -2143,13 +2144,292 @@ Things to notice:
   burst, and a buffered `consume` won't fire afterwards.
 - **The Engine panel shows the stack.** Open the debug UI and expand **Game states** to see
   each state, top first, and what's paused.
-- The best score is kept only while the game runs. Saving it is the next framework feature
-  (settings and save files).
+- The best score is kept only while the game runs. Step 15 saves it.
 
 **Run it:** the game starts on the title. **Play** starts a round: collect coins until the
 clock runs out. **Esc** (or **Start** on a pad) pauses; the sound goes muffled. **Back**
 (or **B**) also resumes. Try the mouse on the menus too. In the debug UI, **End round**
 skips to the result.
+
+---
+
+## Step 15 — Settings and save files
+
+Close the game and everything is forgotten: the best score, the volume, the controls you
+rebound. Games keep two kinds of things between sessions:
+
+- **Settings**: how the player likes the game (volume, fullscreen, controls).
+- **Progress**: what they've achieved (scores, unlocked levels, save slots).
+
+Both go in files in the **player's own save folder**, never next to the game's `.exe`
+(Steam installs games in a folder players may not be allowed to write to):
+
+| System | Save folder |
+|---|---|
+| Windows | `%APPDATA%\MyStudio\Game2D\` (for example `C:\Users\you\AppData\Roaming\MyStudio\Game2D\`) |
+| Linux, Steam Deck | `~/.local/share/MyStudio/Game2D/` |
+
+The names come from `main.cpp`: `config.organization` (your studio, or your own name) and
+`config.application`. Open the debug UI's Engine panel and expand **Settings & saves** to
+see the folder; **Open folder** shows it in Explorer.
+
+### Settings: already done for you
+
+The framework keeps **`settings.json`** by itself. At start it loads the file and starts
+the game the way the player left it, and at exit it saves:
+
+```json
+{
+  "audio": { "master": 0.7, "music": 0.8, "muted": false, "sfx": 1.0 },
+  "controls": { "burst": ["key:J", "pad:a"] },
+  "game": { "showHelp": false },
+  "version": 1,
+  "video": { "fullscreen": false, "vsync": false }
+}
+```
+
+So since step 13, any controls you rebind in the debug UI are remembered, and so are
+**M** (mute), **V** (vsync) and **F11** (fullscreen). Only changed controls are saved, so if
+you change a default in code, everyone who didn't rebind it gets the new one.
+
+`app.settings()` is that file, so your game can keep its own settings in it too, under
+`"game"`. `app.saveSettings()` writes it straight away, and `app.resetSettings()` puts
+everything back to the defaults.
+
+### Progress: a `core::SaveData`
+
+`core::SaveData` (`core/SaveData.h`) is a JSON file of named values:
+
+```cpp
+core::SaveData save("save.json");      // in the save folder
+save.load();                           // false the first time: there's no file yet
+int best = save.getInt("bestScore");   // 0 if it isn't there (or getInt("bestScore", 10))
+save.set("stats.rounds", 3);           // dots make groups: { "stats": { "rounds": 3 } }
+save.save();                           // writes the file
+```
+
+There are `getBool`/`getInt`/`getFloat`/`getString` and `set` for each type, plus `has`,
+`remove`, `erase` (delete the file: "new game") and `json()` for lists. Saving is
+**crash-safe**: the new data is written to a temporary file that then replaces the old
+one, and the previous version is kept as `save.json.bak`. If the file is ever damaged (a
+power cut at the wrong moment), `load()` uses the backup.
+
+In **`MyGame.h`**, after `bestScore()`:
+
+```cpp
+    const core::SaveData& saveData() const { return save_; }
+```
+
+and at the end of the members:
+
+```cpp
+    // Progress kept between sessions: save.json in the player's save folder.
+    core::SaveData save_{"save.json"};
+```
+
+In **`MyGame.cpp`**, in `onInit`, just before the title screen is pushed:
+
+```cpp
+    // Progress from earlier sessions. The first time there's no file: every get then
+    // returns its fallback (0 here).
+    save_.load();
+    bestScore_ = save_.getInt("bestScore");
+    // A setting of the game's own, kept with the framework's in settings.json.
+    showHelp_ = app.settings().getBool("game.showHelp", true);
+```
+
+In `onFixedUpdate`, when the round ends, save after updating `bestScore_`:
+
+```cpp
+            // Keep the best score and some lifetime stats in save.json.
+            save_.set("bestScore", bestScore_);
+            save_.set("stats.rounds", save_.getInt("stats.rounds") + 1);
+            save_.set("stats.coins", save_.getInt("stats.coins") + score_);
+            save_.save();
+```
+
+In `onUpdate`, remember the help toggle as a setting:
+
+```cpp
+    if (actions.pressed("help")) {
+        showHelp_ = !showHelp_;
+        app.settings().set("game.showHelp", showHelp_); // saved with the other settings at exit
+    }
+```
+
+And in `onDebugUI`, after the "End round" button, a way to start again from scratch:
+
+```cpp
+    ImGui::SameLine();
+    if (ImGui::Button("Delete save")) { // back to a first run: no best score, no stats
+        save_.erase();
+        bestScore_ = 0;
+    }
+```
+
+### An Options screen
+
+Give `Menu` two more functions, so a screen can change an item's text and see which item
+is highlighted. Add them just before its `private:`:
+
+```cpp
+    int selected() const { return selected_; }
+    void setItem(int index, std::string text) { items_[size_t(index)] = std::move(text); } // e.g. "Volume: 80%"
+```
+
+With one menu on top of another (Options over the pause screen), only the top one should
+draw. At the start of `MenuState::drawScreen`:
+
+```cpp
+        if (app.states().top() != this)
+            return; // another menu (Options) is on top: let it have the screen
+```
+
+The Options screen goes **before** `TitleState`, since the title and pause screens open
+it:
+
+```cpp
+// Options: volume, fullscreen and vsync. It goes on top of the title or pause screen,
+// which step aside while it's there (see drawScreen). The framework keeps these in the
+// player's settings.json by itself; saveSettings() just writes them straight away.
+class OptionsState : public MenuState {
+public:
+    explicit OptionsState(MyGame& game) : MenuState(game, {"Volume", "Fullscreen", "VSync", "Back"}) { name = "Options"; }
+
+    void onUpdate(core::Application& app, float) override
+    {
+        const core::Actions& actions = app.actions();
+        const int chosen = menu_.update(app);
+        if (menu_.selected() == 0) {
+            // Volume in steps of 10%: left/right, or choosing it goes up and wraps round.
+            int step = int(std::lround(app.audio().masterVolume() * 10.0f));
+            if (actions.pressed("left"))
+                step = std::max(step - 1, 0);
+            if (actions.pressed("right"))
+                step = std::min(step + 1, 10);
+            if (chosen == 0)
+                step = (step + 1) % 11;
+            app.audio().setMasterVolume(float(step) / 10.0f);
+        }
+        if (chosen == 1)
+            app.window().toggleFullscreen();
+        if (chosen == 2)
+            app.renderer().setVsync(!app.renderer().vsync());
+        if (chosen == 3 || actions.pressed("back") || actions.pressed("pause")) {
+            app.saveSettings(); // now, rather than only at exit
+            app.states().pop();
+        }
+    }
+    void onRender(core::Application& app, gfx::FrameContext& frame) override
+    {
+        const auto onOff = [](bool on) { return std::string(on ? "On" : "Off"); };
+        menu_.setItem(0, "Volume: " + std::to_string(int(std::lround(app.audio().masterVolume() * 100.0f))) + "%");
+        menu_.setItem(1, "Fullscreen: " + onOff(app.window().isFullscreen()));
+        menu_.setItem(2, "VSync: " + onOff(app.renderer().vsync()));
+        const core::Actions& actions = app.actions();
+        drawScreen(app, frame, "Options", actions.prompt("left") + "/" + actions.prompt("right") + ": volume");
+    }
+};
+```
+
+The title screen gets an **Options** item, and shows the saved best score and stats:
+
+```cpp
+class TitleState : public MenuState {
+public:
+    explicit TitleState(MyGame& game) : MenuState(game, {"Play", "Options", "Quit"}) { name = "Title"; }
+
+    void onUpdate(core::Application& app, float) override
+    {
+        switch (menu_.update(app)) {
+        case 0: // Play
+            game_.startRound();
+            app.states().pop(); // the game carries on underneath (next frame)
+            break;
+        case 1:
+            app.states().push<OptionsState>(game_);
+            break;
+        case 2:
+            app.quit();
+            break;
+        }
+    }
+    void onRender(core::Application& app, gfx::FrameContext& frame) override
+    {
+        // The best score and stats come from save.json, so they survive closing the game.
+        const core::SaveData& save = game_.saveData();
+        drawScreen(app, frame, "Slime Garden",
+                   save.has("bestScore")
+                       ? "Best score: " + std::to_string(save.getInt("bestScore")) + "   Coins, all time: " +
+                             std::to_string(save.getInt("stats.coins"))
+                       : "Collect all the coins you can in " + std::to_string(int(kRoundSeconds)) + " seconds");
+    }
+};
+```
+
+and the pause screen gets one too (note the cases after it move down by one):
+
+```cpp
+class PauseState : public MenuState {
+public:
+    explicit PauseState(MyGame& game) : MenuState(game, {"Resume", "Restart", "Options", "Quit to title"}) { name = "Pause"; }
+
+    // Muffle every sound while paused, as if heard through a wall.
+    void onEnter(core::Application& app) override { app.audio().setLowPass(audio::Bus::Master, 500.0f, 0.2f); }
+    void onExit(core::Application& app) override { app.audio().setLowPass(audio::Bus::Master, audio::kLowPassOff, 0.2f); }
+
+    void onUpdate(core::Application& app, float) override
+    {
+        if (app.actions().pressed("pause") || app.actions().pressed("back")) {
+            app.states().pop();
+            return;
+        }
+        switch (menu_.update(app)) {
+        case 0:
+            app.states().pop();
+            break;
+        case 1:
+            game_.startRound();
+            app.states().pop();
+            break;
+        case 2:
+            app.states().push<OptionsState>(game_); // on top; this screen stays underneath
+            break;
+        case 3:
+            app.states().replace<TitleState>(game_); // swap this screen for the title
+            break;
+        }
+    }
+    void onRender(core::Application& app, gfx::FrameContext& frame) override
+    {
+        drawScreen(app, frame, "Paused", "");
+    }
+};
+```
+
+Things to notice:
+
+- **The game didn't load or save any settings itself.** Volume, fullscreen and vsync are
+  just changed on the audio engine, window and renderer; the framework saves what they
+  are at exit. `saveSettings()` on leaving Options writes them immediately, in case the
+  game crashes or is killed later.
+- **Options is pushed on top of Pause**, not swapped in, so **Back** (or Esc, or B)
+  returns to the pause menu. Pause stays muffled because its `onExit` hasn't run.
+- **Progress is saved when something happens** (a round ends), not at exit: a player who
+  quits with Alt+F4, or whose battery dies, keeps their score.
+- **Save slots** are just more files: `core::SaveData slot("slot" + std::to_string(n) + ".json")`.
+- **Steam Cloud** can sync the save folder without any code: in Steamworks' Steam Cloud
+  (Auto-Cloud) settings, add a root path of `WinAppDataRoaming` with the subdirectory
+  `MyStudio/Game2D`, and a root override for Linux to `LinuxXdgDataHome` (the Steam Deck
+  is Linux). Check Steamworks' own Steam Cloud page when you set it up.
+- To start completely fresh while testing, use **Delete save** (the Game window) and
+  **Reset settings** (the Engine panel's "Settings & saves"), or delete the folder while
+  the game isn't running.
+
+**Run it:** play a round, then close the game and start it again: the title shows your
+best score and coins collected. Open **Options** from the title or the pause menu: change
+the volume with left/right, switch fullscreen or vsync. Close and restart: they're
+remembered, and so is the help panel (**H**) and any controls you rebound.
 
 **That's the complete demo.** Your `MyGame` now behaves exactly like `DemoGame`. You can
 delete `DemoGame.h/.cpp` from your own projects once you no longer need them for reference.
@@ -2166,9 +2446,9 @@ Ideas, roughly in order of difficulty, each building on what you've used here:
    chasing the player with `glm::normalize(player - enemy)`.
 3. **Tilemaps from a file.** Load a map made in the Tiled editor (`.tmj` is JSON) and draw
    the visible tiles from a tileset atlas, just like step 4.
-4. **More screens.** An options screen pushed from the pause menu (volume sliders with
-   left/right, the Controls bindings from step 13), or a "Get ready... 3, 2, 1" state
-   that doesn't pause the game but stops the player moving until it pops.
+4. **More screens.** A Controls screen in Options (the rebinding from step 13, as a
+   menu), a high-score table kept in `save.json()` as a list, or a "Get ready... 3, 2, 1"
+   state that doesn't pause the game but stops the player moving until it pops.
 5. **A level editor.** Grow the debug UI into a tool: click the world (convert the mouse
    with `camera_.screenToWorld`) to place coins when a "Place coins" checkbox is on.
 6. **Music and atmosphere.** A track with `playMusic`, a quieter one for the title, and a

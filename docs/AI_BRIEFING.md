@@ -7,7 +7,7 @@
 > (design and internals), `docs/TUTORIAL.md` (the demo built step by step) or
 > `docs/BUILDING.md` (Windows, Linux, Steam Deck builds).
 >
-> Framework state: **2026-11-06**. If the user's copy of the framework is older or newer,
+> Framework state: **2026-11-07**. If the user's copy of the framework is older or newer,
 > trust the source code over this file.
 
 ## 1. What it is
@@ -16,8 +16,8 @@ An engine-free C++20 starter for **2D games** on Windows, Linux and Steam Deck. 
 owns all the code: a thin platform layer (SDL3), a Vulkan 1.3 renderer, a batched sprite
 renderer with cameras and TrueType text, audio with effects, and a debug UI. A playable
 demo (`DemoGame`: a slime collecting coins in 60-second rounds, with a title screen, pause
-menu and result screen, particles, a HUD, sound zones and debug panels) shows how it fits
-together.
+menu, options and result screens, a saved best score, particles, a HUD, sound zones and
+debug panels) shows how it fits together.
 
 - **Language and build:** C++20, CMake ≥ 3.22 with presets (`debug`, `relwithdebinfo`,
   `release`, `vs2022`, `vs2026`). Every dependency is downloaded by CMake at a pinned
@@ -34,7 +34,7 @@ together.
 ```
 src/
   main.cpp              AppConfig + run the game (swap DemoGame for your game here)
-  core/                 Application (loop, hooks), Window, Input, Actions, GameState, Paths, Log
+  core/                 Application (loop, hooks), Window, Input, Actions, GameState, SaveData, Paths, Log
   gfx/                  Vulkan: VulkanContext, Swapchain, Renderer, Buffer, Image,
                         Texture, Pipeline(Builder), Descriptors
   render2d/             SpriteBatch, Camera2D, Font, Animation (SpriteSheet, Animator)
@@ -257,7 +257,7 @@ refresh rate. Read held input (movement) in `onUpdate` into a member and apply i
 `onFixedUpdate`; for one-off presses read in `onFixedUpdate` (a punch, a jump) use
 `app.actions().consume("punch")`, so a press is never lost between steps or used twice.
 
-**`core::Application`:** `window()`, `input()`, `actions()`, `states()`, `gpu()` (`gfx::VulkanContext&`),
+**`core::Application`:** `window()`, `input()`, `actions()`, `states()`, `settings()`, `saveSettings()`, `resetSettings()`, `gpu()` (`gfx::VulkanContext&`),
 `renderer()` (`gfx::Renderer&`), `audio()` (`audio::AudioEngine&`), `debugUI()`
 (`debugui::DebugUI*`, **null in Release builds**), `config()`, `time()` (seconds since
 start), `fps()`, `interpolationAlpha()`, `quit()`.
@@ -306,7 +306,40 @@ private:
 **`core::AppConfig`** (set in `main.cpp`): `window` (`title`, `width`, `height`,
 `resizable`, `fullscreen`), `renderer` (`vsync`, `depthBuffer`, `clearColor` as **linear**
 RGBA, `framesInFlight`), `audio` (see §8), `debugUI` (see §9), `fixedTimestep` (1/60),
-`validation`, `showFpsInTitle`, `f11TogglesFullscreen` (also Alt+Enter).
+`validation`, `showFpsInTitle`, `f11TogglesFullscreen` (also Alt+Enter), `organization` +
+`application` (name the save folder; set in `main.cpp`, never change after release),
+`rememberSettings` (default true).
+
+**Settings and save files** (`core/SaveData.h`, `core/Paths.h`):
+
+- **Save folder:** `core::saveFolder()` / `core::savePath("x.json")` = the player's writable
+  folder from `SDL_GetPrefPath(organization, application)`: `%APPDATA%\<org>\<app>\` on
+  Windows, `~/.local/share/<org>/<app>/` on Linux/Steam Deck. Env `GAME_SAVE_DIR` overrides.
+  Never write next to the exe (Steam install folders may be read-only).
+- **`core::SaveData`**: a JSON object in a file. `SaveData save("save.json")` (relative =
+  in the save folder; absolute paths allowed), `load()` (false if no file / unreadable:
+  data empty), `save()` (false on failure, logged), `exists()`, `erase()` (file + backup +
+  data), `path()`. Values: `getBool/getInt/getFloat/getString(key, fallback)`,
+  `set(key, bool|int|float|double|const char*|string_view)`, `has`, `remove`, `clear`;
+  **dotted keys** nest (`"stats.rounds"` → `{"stats": {"rounds": ...}}`); missing keys and
+  wrong types return the fallback. `json()` gives the `nlohmann::json` (include
+  `<nlohmann/json.hpp>`) for lists/arrays. `toString()`/`parse(text)`.
+- Writes are crash-safe: `<file>.tmp` → current file renamed to `<file>.bak` → temp renamed
+  into place; `load()` falls back to `.bak` if the file is damaged. Floats are written
+  short (`0.7`). Save progress **when it happens** (end of a level/round), not only at exit.
+  Save slots = separate files (`"slot1.json"`...).
+- **`app.settings()`** is the framework's `SaveData` for `settings.json`. With
+  `rememberSettings`, at start-up `video.fullscreen`, `video.vsync`, `audio.master/sfx/music`
+  are applied before the window/renderer/audio are created, `audio.muted` after, and
+  `controls` (rebound actions only) after `Game::onInit`. At exit (after `onShutdown`) the
+  current state is captured and saved. The game adds its own keys under `"game."`
+  (`app.settings().set("game.showHelp", false)`). `app.saveSettings()` captures + writes now
+  (call when leaving an options screen); `app.resetSettings()` restores config defaults and
+  default bindings. Options screens just change the live systems
+  (`audio().setMasterVolume`, `window().toggleFullscreen()`, `renderer().setVsync`).
+- Debug UI → Engine → "Settings & saves": folder, Open folder, Save settings now, Reset settings.
+- Steam Cloud: Auto-Cloud root `WinAppDataRoaming` + `<org>/<app>`, Linux root override
+  `LinuxXdgDataHome`; no code needed.
 
 **Renderer:** `app.renderer().setVsync(bool)`, `vsync()`, `setClearColor(linear vec4)`,
 `extent()`, `colorFormat()`, `depthFormat()`, `framesInFlight()`, `waitIdle()`.
@@ -513,6 +546,8 @@ fadeInSeconds, fadeOutPreviousSeconds = 1})` (crossfades from the current track)
 
 ## 10. Conventions and rules for writing code here
 
+- **Settings are the framework's job** (`app.settings()`, saved automatically); progress
+  goes in a `core::SaveData`, saved when it changes. Never save next to the exe.
 - **Menus and pausing are game states** (`app.states()`), not flags checked all over the
   game.
 - **Gameplay controls are named actions** (`app.actions()`), never hard-coded keys: they
@@ -570,13 +605,15 @@ fadeInSeconds, fadeOutPreviousSeconds = 1})` (crossfades from the current track)
   feature is added, update `README.md`, `docs/ARCHITECTURE.md`, `docs/BUILDING.md` if
   relevant, the tutorial, **and this briefing**.
 
-## 12. Known limitations (as of 2026-11-06)
+## 12. Known limitations (as of 2026-11-07)
 
 - Text is baked at one size per `Font` (for big or zooming text, bake larger or move to MSDF).
 - No bindless textures: batches break on texture changes (use atlases).
 - No tilemap loader or particle system beyond what the demo shows (particles are a vector).
 - Animation has no per-frame hitboxes yet (Aseprite slices aren't read) and no blending
   between clips (pixel art doesn't need it).
+- Saves: no encryption/compression/cloud API (Steam Auto-Cloud works without code), no
+  automatic `version` migration; window size/position aren't remembered.
 - Game states: no built-in transitions (fades) or menu widgets (copy the Game2D demo's
   `Menu`); states are made in code.
 - Input actions: one gamepad (no local multiplayer yet), no chords/combos ("Ctrl+S",

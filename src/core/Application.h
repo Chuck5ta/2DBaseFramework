@@ -3,6 +3,7 @@
 #include "audio/Audio.h"
 #include "core/Actions.h"
 #include "core/GameState.h"
+#include "core/SaveData.h"
 #include "core/Input.h"
 #include "debugui/DebugUI.h"
 #include "core/Window.h"
@@ -67,6 +68,15 @@ struct AppConfig {
 #else
     bool validation = true;
 #endif
+    // Where settings and saves go (core/Paths.h): a folder of the player's,
+    //   Windows: %APPDATA%\<organization>\<application>    Linux / Steam Deck: ~/.local/share/...
+    // Use your studio's (or your own) name and the game's name, and don't change them
+    // once players have saves, or the game won't find them.
+    std::string organization = "MyStudio";
+    std::string application = "MyGame";
+    // Remember the player's settings in settings.json: fullscreen, vsync, volumes, mute
+    // and changed controls are loaded at start and saved at exit. See app.settings().
+    bool rememberSettings = true;
     bool showFpsInTitle = true;
     bool f11TogglesFullscreen = true; // also Alt+Enter
 };
@@ -94,6 +104,16 @@ public:
     debugui::DebugUI* debugUI() { return debugUI_.get(); }
     const AppConfig& config() const { return config_; }
 
+    // The player's settings (settings.json in the save folder). The framework fills in
+    // "video", "audio" and "controls"; add your game's own under "game", e.g.
+    //   app.settings().set("game.difficulty", 2);
+    SaveData& settings() { return settings_; }
+    // Writes the current fullscreen/vsync/volume/mute/controls into settings() and saves
+    // the file (also done at exit). Call it when the player leaves an options screen.
+    bool saveSettings();
+    // Puts fullscreen, vsync, volumes, mute and controls back to the game's defaults.
+    void resetSettings();
+
     double time() const               { return time_; }          // seconds since start
     float fps() const                 { return fps_; }
     float interpolationAlpha() const  { return alpha_; }         // 0..1 between fixed steps
@@ -115,6 +135,8 @@ private:
     double time_ = 0.0;
     Actions actions_;
     StateStack states_;
+    SaveData settings_{"settings.json"};
+    AppConfig defaults_; // the config before settings.json changed it
     float fps_ = 0.0f;
     float alpha_ = 0.0f;
 

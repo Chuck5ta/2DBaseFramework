@@ -34,7 +34,7 @@ The code is split into layers. Each layer only depends on the layers below it.
 flowchart TD
     game["game/  (DemoGame or your game)"]
     r2d["render2d/  SpriteBatch · Camera2D · Font"]
-    core["core/  Application · Window · Input · Actions · GameState · Paths · Log"]
+    core["core/  Application · Window · Input · Actions · GameState · SaveData · Paths · Log"]
     aud["audio/  AudioEngine (miniaudio)"]
     dbg["debugui/  DebugUI (Dear ImGui)"]
     gfx["gfx/  VulkanContext · Swapchain · Renderer · Buffer · Image · Texture · Pipeline · Descriptors"]
@@ -54,7 +54,7 @@ flowchart TD
 
 | Layer | Namespace | Responsibility | Shared with Game3D |
 |---|---|---|---|
-| `src/core` | `core` | Program lifetime, main loop, window, input, input actions, game states, file paths, logging | Yes, identical |
+| `src/core` | `core` | Program lifetime, main loop, window, input, input actions, game states, settings and save files, file paths, logging | Yes, identical |
 | `src/gfx` | `gfx` | Everything Vulkan: device, swapchain, frames, memory, textures, pipelines | Yes, identical |
 | `src/audio` | `audio` | Sound effects, music, 3D sound (miniaudio) | Yes, identical |
 | `src/debugui` | `debugui` | In-game debug overlay (Dear ImGui) | Yes, identical |
@@ -76,7 +76,8 @@ src/
     Input.h/.cpp              keyboard / mouse / gamepad state per frame
     Actions.h/.cpp            named input actions: bindings, rebinding, button prompts
     GameState.h/.cpp          game states (title, pause, game over) on a stack above the Game
-    Paths.h/.cpp              basePath(), shaderPath(), assetPath()
+    Paths.h/.cpp              basePath(), shaderPath(), assetPath(), saveFolder(), savePath()
+    SaveData.h/.cpp           JSON save files (crash-safe writes, .bak fallback); settings.json
     Log.h                     LOG_* macros, core::fatal()
   audio/
     Audio.h/.cpp              AudioEngine: effects, music, 3D listener, mixer
@@ -120,7 +121,9 @@ cmake/                        Dependencies.cmake, Shaders.cmake
 **`core::Application`** owns every long-lived system and runs the main loop.
 Construction order (and reverse destruction order) is significant:
 
-1. `SDL_Init(VIDEO | GAMEPAD)`
+1. `SDL_Init(VIDEO | GAMEPAD)`, then `settings.json` is loaded (if `rememberSettings`) and
+   its fullscreen, vsync and volumes are written into the config, so everything below
+   starts as the player left it
 2. `Window` → 3. `Input` → 4. `gfx::VulkanContext` → 5. `gfx::Renderer` →
    6. `audio::AudioEngine` → 7. `debugui::DebugUI` (if enabled)
 
@@ -211,6 +214,40 @@ flowchart BT
 **`core::Paths`** resolves everything relative to the executable directory
 (`SDL_GetBasePath()`): `shaderPath("x.vert.spv")` → `<exe>/shaders/…`,
 `assetPath("textures/x.png")` → `<exe>/assets/…`. The working directory never matters.
+`saveFolder()` is the player's writable folder, from `SDL_GetPrefPath(organization,
+application)` (`AppConfig`): `%APPDATA%\<org>\<app>\` on Windows, `~/.local/share/<org>/<app>/`
+on Linux and Steam Deck. `GAME_SAVE_DIR` overrides it. `savePath("x.json")` is a file in it.
+
+**Settings and save files** (`core/SaveData.h`). A `SaveData` is a JSON object in a file
+(in the save folder unless given an absolute path) with typed accessors:
+
+- `getBool/getInt/getFloat/getString(key, fallback)` and `set(key, value)`; keys may use
+  dots for nested objects (`"audio.music"`). Missing keys and wrong types give the
+  fallback, so a first run, an older file or a hand-edited file never breaks the game.
+  `has`, `remove`, `clear`, `erase` (delete the file and backup), `json()` for anything else.
+- `save()` writes `<file>.tmp` (flushed), renames the current file to `<file>.bak`, then
+  renames the temp file into place (`SDL_RenamePath` replaces atomically on Windows and
+  POSIX). `load()` falls back to the `.bak` if the file is unreadable or not a JSON
+  object, and a following `save()` then leaves the good backup alone. Floats are written
+  in their shortest form (`0.7`, not `0.699999988`).
+- The path is worked out on first use, so a `SaveData` member is safe to construct
+  before the `Application` sets the folder names.
+
+`app.settings()` is the framework's own `SaveData` (`settings.json`), used when
+`AppConfig::rememberSettings` is true (the default):
+
+- **Start-up:** `video.fullscreen`, `video.vsync` and `audio.master/sfx/music` override the
+  config before the window, renderer and audio engine are created (volumes clamped to
+  0..2); `audio.muted` is applied to the engine. After `Game::onInit` (once the actions
+  exist), `controls` is passed to `Actions::loadBindings`.
+- **Exit:** after `Game::onShutdown`, `saveSettings()` writes the *current* state (window,
+  renderer, audio engine, actions) into the file and saves it. Only actions whose bindings
+  differ from their defaults are written, so changed defaults reach players who didn't
+  rebind. The game's own values (by convention under `"game"`) are kept.
+- `saveSettings()` can be called any time (an options screen closing); `resetSettings()`
+  restores the config's defaults and every action's default bindings.
+- The Engine panel's **Settings & saves** section shows the folder and has *Open folder*,
+  *Save settings now* and *Reset settings*.
 
 **`core/Log.h`** maps `LOG_INFO/WARN/ERROR/DEBUG` onto SDL's logger and provides
 `core::fatal(fmt, …)`, which logs, shows a message box and aborts (see §9).
@@ -719,9 +756,9 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 
 | Platform | Notes |
 |---|---|
-| Windows | MSVC (VS 2022/2026), console in Debug, `WIN32` subsystem in the `release` preset (`GAME_WINDOWS_CONSOLE=OFF`). Vulkan SDK recommended for validation. |
+| Windows | Saves and settings in `%APPDATA%\<organization>\<application>\`. MSVC (VS 2022/2026), console in Debug, `WIN32` subsystem in the `release` preset (`GAME_WINDOWS_CONSOLE=OFF`). Vulkan SDK recommended for validation. |
 | Linux | X11 and Wayland via SDL3 (dev packages needed at build time only). `$ORIGIN` rpath for shipping extra `.so` files. |
-| Steam Deck | SteamOS + Mesa RADV (full Vulkan 1.3). 1280×800; controls exposed as a gamepad by Steam Input; borderless fullscreen under gamescope. Build in a container (distrobox) or the Steam Linux Runtime SDK for releases. |
+| Steam Deck | Saves in `~/.local/share/<organization>/<application>/` (Steam Cloud: Auto-Cloud root `LinuxXdgDataHome`). SteamOS + Mesa RADV (full Vulkan 1.3). 1280×800; controls exposed as a gamepad by Steam Input; borderless fullscreen under gamescope. Build in a container (distrobox) or the Steam Linux Runtime SDK for releases. |
 
 ---
 
@@ -752,6 +789,8 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 | CPU-side sprite transform | Trivial shaders, unlimited batching of mixed transforms | CPU cost per sprite (fine for tens of thousands) |
 | Wait-idle on swapchain recreation | Simplest correct approach | Brief stall on resize only |
 | Fonts baked with stb_truetype into a regular texture | One small header, any .ttf, text batches with sprites through the same pipeline | Sharpest near the baked size; bake large titles separately (or switch to MSDF later) |
+| Settings remembered by the framework, from the live systems | A game gets saved volume, fullscreen, vsync and controls with no code; nothing can drift out of step, because the file is written from what the window, renderer and audio engine actually are | Settings are saved at exit (or on `saveSettings()`), so a crash loses changes made since; the layout of the `video`/`audio`/`controls` keys is the framework's |
+| JSON save files with atomic replace and a backup | Readable and hand-editable while developing; a crash or power cut mid-save can't destroy a save | Text is larger than binary and anyone can edit it (fine for single-player) |
 | Game states on a stack above the `Game`, with changes applied next frame | Pause = push a state; the game needs no "if paused" checks; a state can safely pop itself; an existing game adopts states without restructuring | One frame of delay on every change; games that want screens as separate scenes put gameplay in a state too |
 | Named input actions, with the raw `Input` still available | Rebinding, button prompts and gamepad support come for free; the help text can't go out of date; a press is buffered for fixed steps | Actions are looked up by string (a small map lookup per call); the wheel and cursor stay raw `Input` |
 | Fixed-timestep simulation | Deterministic gameplay, frame-rate independent | Needs interpolation for smooth rendering |
@@ -771,6 +810,9 @@ automatically. `*.glsl` files in the folder are treated as includes and trigger 
 - Input actions: one gamepad (no local multiplayer yet); no chords or combos ("Ctrl+S",
   double-tap); the mouse wheel and cursor aren't bindable. Bindings aren't saved to disk
   by the framework yet (`saveBindings()` gives the text; settings files are planned).
+- Saves: no encryption, compression or cloud API (Steam Auto-Cloud can sync the folder
+  without code); no automatic migration between `version`s; windowed size and position
+  aren't remembered.
 - No deferred resource destruction; destroy GPU objects only when idle (see §4).
 - Single queue for graphics/transfer; uploads are blocking (`immediateSubmit`).
 - No bindless textures; batches break on texture changes.

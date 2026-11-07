@@ -498,6 +498,7 @@ A short checklist (full details in the Steamworks documentation:
 | Steam Deck: *Permission denied* when launching | Executable bit lost during copying: `chmod +x Game2D`. |
 | Steam Deck: controls act like a keyboard/mouse | Change the controller layout for the shortcut to a gamepad template (§4.5). |
 | The debug UI doesn't appear | It exists in Debug builds only (`relwithdebinfo` and `release` don't create it). Press the key below Esc (**`**). To keep it in another build, set `config.debugUI.enabled = true` in `main.cpp`. |
+| The game starts muted, without vsync, in fullscreen, or with odd controls | Not a bug: the player's settings are remembered between runs in `settings.json`. In a Debug build, open the debug UI → Engine → **Settings & saves** → **Reset settings**, or close the game and delete the save folder: `%APPDATA%\MyStudio\Game2D` on Windows, `~/.local/share/MyStudio/Game2D` on Linux. |
 | No sound | The log shows the device at startup (*Audio: … via WASAPI / PulseAudio / …*). *Audio: no output device* means none was found: the game keeps running silently. Check that `GAME_AUDIO` isn't set to `0`, the game isn't muted (**M** in the demo) and the sound files are in `assets/sounds/` next to the executable. |
 | Linux: *ALSA lib …* or *jack server is not running* lines in the console | Harmless. miniaudio is trying audio backends in turn; it uses the first one that works. |
 | Windows: game window is slow or stutters only in Debug | Debug builds are unoptimised and run validation; compare with `relwithdebinfo` / `release`. |
@@ -523,6 +524,7 @@ A short checklist (full details in the Steamworks documentation:
 | `GAME_VALIDATION=0/1` | Force Vulkan validation off/on (default: on in Debug builds) |
 | `GAME_MAX_FRAMES=N` | Quit after N rendered frames (smoke tests, CI) |
 | `GAME_AUDIO=0` | Turn audio off (no device is opened; every sound call does nothing) |
+| `GAME_SAVE_DIR=<folder>` | Use this folder for settings and saves instead of the player's save folder (tests, a portable copy) |
 | `SDL_VIDEO_DRIVER=x11/wayland` | Force the Linux windowing backend |
 | `VK_ICD_FILENAMES` / `VK_DRIVER_FILES` | Force a specific Vulkan driver (advanced; e.g. testing with a software renderer) |
 

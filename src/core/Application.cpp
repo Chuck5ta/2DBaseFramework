@@ -1,8 +1,10 @@
 #include "core/Application.h"
 
 #include "core/Log.h"
+#include "core/Paths.h"
 
 #include <SDL3/SDL.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cstdlib>
@@ -51,6 +53,22 @@ Application::Application(const AppConfig& config)
 
     config_.validation = envInt("GAME_VALIDATION", config_.validation ? 1 : 0) != 0;
 
+    // The player's settings, applied before the window, renderer and audio are made, so
+    // the game starts as they left it (no flash of windowed mode before fullscreen).
+    defaults_ = config_;
+    setSaveFolderNames(config_.organization, config_.application);
+    if (config_.rememberSettings && settings_.load()) {
+        const auto volume = [&](const char* key, float fallback) {
+            return std::clamp(settings_.getFloat(key, fallback), 0.0f, 2.0f);
+        };
+        config_.window.fullscreen = settings_.getBool("video.fullscreen", config_.window.fullscreen);
+        config_.renderer.vsync = settings_.getBool("video.vsync", config_.renderer.vsync);
+        config_.audio.masterVolume = volume("audio.master", config_.audio.masterVolume);
+        config_.audio.sfxVolume = volume("audio.sfx", config_.audio.sfxVolume);
+        config_.audio.musicVolume = volume("audio.music", config_.audio.musicVolume);
+        LOG_INFO("Settings: %s", settings_.path().c_str());
+    }
+
     window_ = std::make_unique<Window>(config_.window);
     input_ = std::make_unique<Input>();
     input_->setPixelDensity(window_->pixelDensity());
@@ -61,6 +79,8 @@ Application::Application(const AppConfig& config)
     context_ = std::make_unique<gfx::VulkanContext>(*window_, ctxDesc);
     renderer_ = std::make_unique<gfx::Renderer>(*context_, *window_, config_.renderer);
     audio_ = std::make_unique<audio::AudioEngine>(config_.audio);
+    if (config_.rememberSettings)
+        audio_->setMuted(settings_.getBool("audio.muted", false));
     if (config_.debugUI.enabled)
         debugUI_ = std::make_unique<debugui::DebugUI>(*window_, *context_, *renderer_, config_.debugUI);
 }
@@ -75,6 +95,47 @@ Application::~Application()
     input_.reset();
     window_.reset();
     SDL_Quit();
+}
+
+bool Application::saveSettings()
+{
+    SaveData& s = settings_;
+    s.set("version", 1); // for converting older files if the layout ever changes
+    s.set("video.fullscreen", window_->isFullscreen());
+    s.set("video.vsync", renderer_->vsync());
+    s.set("audio.master", audio_->masterVolume());
+    s.set("audio.sfx", audio_->sfxVolume());
+    s.set("audio.music", audio_->musicVolume());
+    s.set("audio.muted", audio_->muted());
+
+    // Only the actions the player changed: the rest follow the game's defaults, so a
+    // default that changes in an update reaches everyone who didn't rebind it.
+    nlohmann::json controls = nlohmann::json::object();
+    for (const std::string& name : actions_.names()) {
+        if (actions_.bindings(name) == actions_.defaultBindings(name))
+            continue;
+        nlohmann::json list = nlohmann::json::array();
+        for (const Binding& b : actions_.bindings(name))
+            list.push_back(b.toString());
+        controls[name] = std::move(list);
+    }
+    if (controls.empty())
+        s.remove("controls");
+    else
+        s.json()["controls"] = std::move(controls);
+
+    return s.save();
+}
+
+void Application::resetSettings()
+{
+    window_->setFullscreen(defaults_.window.fullscreen);
+    renderer_->setVsync(defaults_.renderer.vsync);
+    audio_->setMasterVolume(defaults_.audio.masterVolume);
+    audio_->setSfxVolume(defaults_.audio.sfxVolume);
+    audio_->setMusicVolume(defaults_.audio.musicVolume);
+    audio_->setMuted(false);
+    actions_.resetAllToDefaults();
 }
 
 void Application::pumpEvents()
@@ -117,6 +178,11 @@ void Application::pumpEvents()
 int Application::run(Game& game)
 {
     game.onInit(*this);
+
+    // Controls the player changed, now that the game has defined its actions (unknown
+    // actions or inputs in the file are skipped).
+    if (config_.rememberSettings && settings_.has("controls"))
+        actions_.loadBindings(settings_.json()["controls"].dump());
 
     // Testing aid: GAME_MAX_FRAMES=N exits after N rendered frames.
     const long maxFrames = envInt("GAME_MAX_FRAMES", 0);
@@ -210,6 +276,9 @@ int Application::run(Game& game)
     renderer_->waitIdle();
     states_.shutdown(*this); // states may hold GPU objects: the GPU is idle now
     game.onShutdown(*this);
+    if (config_.rememberSettings)
+        saveSettings(); // after onShutdown, so the game can still set values there
+
     return 0;
 }
 
@@ -336,6 +405,24 @@ void Application::drawEnginePanel()
             ImGui::TextDisabled("No gamepad connected");
     }
 
+    if (ImGui::CollapsingHeader("Settings & saves")) {
+        const std::string folder = saveFolder();
+        ImGui::TextUnformatted("Save folder:");
+        ImGui::TextWrapped("%s", folder.c_str());
+        if (ImGui::Button("Open folder")) {
+            std::string url = folder;
+            std::replace(url.begin(), url.end(), '\\', '/');
+            SDL_OpenURL(((url.front() == '/' ? "file://" : "file:///") + url).c_str());
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Save settings now"))
+            saveSettings();
+        ImGui::SameLine();
+        if (ImGui::Button("Reset settings"))
+            resetSettings();
+        ImGui::TextDisabled(config_.rememberSettings ? "settings.json: loaded at start, saved at exit"
+                                                     : "rememberSettings is off");
+    }
     if (ImGui::CollapsingHeader("Game states")) {
         // Top first, as the player sees them.
         if (states_.empty())

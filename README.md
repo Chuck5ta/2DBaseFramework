@@ -9,6 +9,7 @@ a batched sprite renderer and audio, plus a playable demo showing how they fit t
 | Platform | Window, keyboard/mouse, gamepads (incl. Steam Deck controls), hi-DPI | SDL3 |
 | Input actions | Named actions ("jump") with rebindable keys/buttons/sticks, button prompts for the device in use (Xbox, PlayStation, Nintendo labels), buffered presses, bindings as JSON | nlohmann/json |
 | Game states | A stack of screens (title, pause, game over) above the game: each can pause or hide what's below; safe push/pop/replace | your code |
+| Settings & saves | The player's settings (fullscreen, vsync, volumes, mute, rebound controls) remembered automatically; JSON save files with crash-safe writes, in the player's own folder (Steam Cloud friendly) | nlohmann/json |
 | GPU | Instance/device setup, swapchain, frames in flight, buffers, textures, pipelines | Vulkan 1.3 via volk + VMA |
 | 2D | Sprite batching, orthographic camera, atlas UVs, rect/line helpers | your code |
 | Animation | Sprite sheets (grid or Aseprite JSON export), clips with per-frame timing, loop/once/ping-pong, frame events | nlohmann/json |
@@ -103,7 +104,8 @@ src/
     Input               keyboard, mouse, gamepad (pressed / down / released)
     Actions             named input actions: rebindable, with button prompts
     GameState           title / pause / game-over screens on a stack (app.states())
-    Paths               shaderPath(), assetPath()
+    Paths               shaderPath(), assetPath(), saveFolder() (the player's folder)
+    SaveData            save files: get/set values, crash-safe save, backup; app.settings()
     Log.h               LOG_INFO/WARN/ERROR, core::fatal()
   audio/                sound effects, music, 3D sound (shared with Game3D)
     AudioEngine         miniaudio: cached effects, streamed music, listener, mixer
@@ -206,6 +208,15 @@ Tips
 - Effects: `app.audio().setReverb(audio::ReverbParams::preset(audio::ReverbPreset::Cave))`,
   `app.audio().setLowPass(audio::Bus::Sfx, 700.0f)` (muffled), `setEcho`, `setHighPass`.
   Changes glide smoothly. Try them all live in the debug UI (Engine → Audio → Audio effects).
+- Settings and saves: the framework remembers fullscreen, vsync, volumes, mute and
+  rebound controls in `settings.json` by itself. Add your own with
+  `app.settings().set("game.difficulty", 2)`. For progress, use a `core::SaveData`:
+  `save.load()`, `save.getInt("bestScore")`, `save.set(...)`, `save.save()` (tutorial step 15).
+  Files go in the player's save folder: `%APPDATA%\MyStudio\Game2D\` on Windows,
+  `~/.local/share/MyStudio/Game2D/` on Linux and Steam Deck. Set `config.organization`
+  and `config.application` in `main.cpp` before you release (and don't change them
+  afterwards, or players lose their saves). While developing: debug UI → Engine →
+  **Settings & saves** to open the folder or reset settings.
 - Game states: derive from `core::GameState`, then `app.states().push<PauseState>(...)`.
   By default a state pauses the game below it (its `onUpdate`/`onFixedUpdate` stop) and
   lets it show through; `pop()` resumes. Changes apply at the start of the next frame, so
@@ -236,6 +247,7 @@ Tips
 | Fullscreen | F11 / Alt+Enter | |
 | Menus: choose / select / back | Up/Down (or mouse), Enter or Space (or click), Backspace | D-pad or stick, A, B |
 | Pause (Quit is on the title screen) | Esc | Start (Menu) |
+| Options (volume, fullscreen, vsync) | Title or pause menu → **Options**; Left/Right for volume | D-pad / stick |
 
 ---
 
@@ -264,6 +276,10 @@ Also handy: the **Steam Deck devkit client** (Steamworks docs → *Steam Deck �
 for Steam Deck*) deploys and runs builds from your PC over the network.
 
 The Windows build also runs on the Deck through Proton, but shipping the native Linux build is better.
+
+Saves and settings live in `~/.local/share/<organization>/<application>/` on the Deck. Steam
+Cloud can sync them with Auto-Cloud (no code): root `WinAppDataRoaming` plus your
+`<organization>/<application>` subfolder, with a Linux root override to `LinuxXdgDataHome`.
 
 Things worth testing on the Deck: 800p UI scale (`referenceHeight` helps), 40/60 Hz frame
 limits, suspend/resume (swapchain recreation), on-screen keyboard if you need text input.

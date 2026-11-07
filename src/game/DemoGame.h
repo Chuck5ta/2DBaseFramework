@@ -27,6 +27,7 @@ public:
     // Used by the menu screens (game states) in DemoGame.cpp.
     void startRound();
     int bestScore() const { return bestScore_; }
+    const core::SaveData& saveData() const { return save_; }
 
 private:
     struct Particle {
@@ -96,4 +97,7 @@ private:
     float roundTime_ = 0.0f;
     int bestScore_ = 0;
     friend class MenuState; // the menu screens draw with our SpriteBatch, font and HUD camera
+
+    // Progress kept between sessions: save.json in the player's save folder.
+    core::SaveData save_{"save.json"};
 };
